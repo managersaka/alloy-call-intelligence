@@ -31,12 +31,13 @@ alloy-call-intelligence/
 
 1. `git clone` into `/opt/alloy-call-intelligence` (or wherever your services live)
 2. Node **>= 22.5** required (`node:sqlite` built-in; emits an "experimental" warning — harmless, pin your Node version)
-3. `cd worker && cp .env.example .env` — fill in PITs per location, Anthropic key, webhook secret. `.env` is gitignored; never commit it.
-4. `npm install && npm start` (or a systemd unit / pm2)
-5. GHL side, per location:
+3. Scoring runs through **Claude Code on subscription** by default (`CLAUDE_MODE=cli`): install Claude Code on the host and `claude login` once as the service user — no API key needed. `CLAUDE_MODE=api` + `ANTHROPIC_API_KEY` is the fallback (system prompts are cache_control'd). Calls under `MIN_CALL_SEC` (45s) are auto-classified `admin_other` without any Claude call.
+4. `cd worker && cp .env.example .env` — fill in PITs per location (free, just auth) and the webhook secret. `.env` is gitignored; never commit it.
+5. `npm install && npm start` (or a systemd unit / pm2)
+6. GHL side, per location:
    - Settings → Phone System → Voice → enable **Call Transcription** (Voice Intelligence, $0.024/min) — *you said consent + settings are done; double-check transcription specifically is on, it's a separate toggle from recording*
    - Workflow: trigger **Call Status = completed** → **Custom Webhook** action → POST `https://<your-tunnel>/webhook/ghl-call` with header `x-webhook-secret: <same as .env>`. Map messageId, conversationId, contactId, contactName, locationId, direction, callDuration, assigned user.
-6. Cron:
+7. Cron:
    - Nightly sweep: `15 2 * * * cd /opt/alloy-call-intelligence/worker && node src/index.js --poll`
    - Weekly rollup (Sun 9pm): `0 21 * * 0 cd /opt/alloy-call-intelligence/worker && node src/rollup.js`
 

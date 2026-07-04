@@ -19,6 +19,7 @@ const LOCATIONS = JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]');
 const locById = Object.fromEntries(LOCATIONS.map((l) => [l.locationId, l]));
 
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
+const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // set the same value in the GHL workflow header
 
 // ---------- Feed 1: real-time webhook ----------
@@ -168,6 +169,17 @@ async function drain(nextBatch, handle) {
 
 async function processQueueOnce() {
   await drain(() => unprocessedCalls(db), async (call) => {
+    if (call.duration_sec != null && call.duration_sec < MIN_CALL_SEC) {
+      setClassification(db, call.id, {
+        classification: 'admin_other',
+        confidence: 1,
+        summary: `auto-skipped: ${call.duration_sec}s call, under ${MIN_CALL_SEC}s threshold`,
+        outcome: 'too short to classify',
+        next_action: 'none',
+      });
+      console.log(`skipped ${call.id}: ${call.duration_sec}s < ${MIN_CALL_SEC}s`);
+      return;
+    }
     const c = await classifyCall(call.transcript);
     const classification = c.confidence < CONFIDENCE_THRESHOLD ? 'REVIEW' : c.classification;
     setClassification(db, call.id, {
