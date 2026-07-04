@@ -18,6 +18,10 @@ app.use(express.json({ limit: '2mb' }));
 const LOCATIONS = JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]');
 const locById = Object.fromEntries(LOCATIONS.map((l) => [l.locationId, l]));
 
+// GHL userId → display name (both locations merged; poll only returns userId)
+const USERS = JSON.parse(process.env.GHL_USERS_JSON || '{}');
+const staffName = (idOrName) => (idOrName ? USERS[idOrName] || idOrName : null);
+
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
 const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // set the same value in the GHL workflow header
@@ -42,7 +46,7 @@ app.post('/webhook/ghl-call', async (req, res) => {
       contactId: p.contactId,
       contactName: p.contactName || p.full_name,
       direction: p.direction,
-      staff: p.userName || p.assignedUser,
+      staff: staffName(p.userId) || p.userName || p.assignedUser,
       startedAt: p.dateAdded || new Date().toISOString(),
       durationSec: p.callDuration ? Number(p.callDuration) : null,
     });
@@ -67,7 +71,7 @@ export async function pollOnce() {
             contactId: c.contactId,
             contactName: c.fullName || c.contactName,
             direction: m.direction,
-            staff: m.userId || null,
+            staff: staffName(m.userId),
             startedAt: m.dateAdded,
             durationSec: m.meta?.call?.duration ?? null,
           });
