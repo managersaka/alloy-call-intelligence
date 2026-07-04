@@ -12,6 +12,8 @@ export function openDb() {
   const db = new DatabaseSync(DB_PATH);
   const schema = readFileSync(path.join(__dirname, '..', 'sql', 'schema.sql'), 'utf8');
   db.exec(schema);
+  // Migrations for DBs created before the column existed (CREATE IF NOT EXISTS won't alter).
+  try { db.exec('ALTER TABLE calls ADD COLUMN clarity_outcome TEXT'); } catch { /* already there */ }
   return db;
 }
 
@@ -28,11 +30,11 @@ export function upsertCall(db, call) {
   `).run(call);
 }
 
-export function setClassification(db, id, { classification, confidence, summary, outcome, next_action }) {
+export function setClassification(db, id, { classification, confidence, summary, outcome, next_action, clarity_outcome }) {
   db.prepare(`
-    UPDATE calls SET classification=?, class_confidence=?, summary=?, outcome=?, next_action=?, processed=1
+    UPDATE calls SET classification=?, class_confidence=?, summary=?, outcome=?, next_action=?, clarity_outcome=?, processed=1
     WHERE id=?
-  `).run(classification, confidence, summary, outcome, next_action, id);
+  `).run(classification, confidence, summary, outcome, next_action, clarity_outcome ?? null, id);
 }
 
 export function insertScore(db, s) {
@@ -49,11 +51,15 @@ export function unprocessedCalls(db, limit = 20) {
   return db.prepare(`SELECT * FROM calls WHERE processed = 0 AND transcript IS NOT NULL LIMIT ?`).all(limit);
 }
 
-export function unscoredSalesCalls(db, limit = 10) {
+export function unscoredSalesCalls(db, minEvalSec = 0, limit = 10) {
+  // Full-rubric evaluation only for real conversations (>= minEvalSec); shorter
+  // sales calls keep their classifier clarity_outcome but are never rubric-scored.
+  // Unknown duration => still evaluate (rare; better to over-grade than miss a real call).
   return db.prepare(`
     SELECT c.* FROM calls c
     LEFT JOIN call_scores s ON s.call_id = c.id
     WHERE c.classification = 'sales' AND s.id IS NULL AND c.transcript IS NOT NULL
+      AND (c.duration_sec IS NULL OR c.duration_sec >= ?)
     LIMIT ?
-  `).all(limit);
+  `).all(minEvalSec, limit);
 }

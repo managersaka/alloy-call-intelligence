@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS calls (
   transcript_source TEXT,                  -- 'ghl_native' | 'whisper' | 'drive_backfill'
   classification TEXT,                     -- 'sales' | 'member_request' | 'accountability' | 'admin_other' | 'REVIEW'
   class_confidence REAL,
+  clarity_outcome TEXT,                    -- sales calls only, from classifier: 'booked'|'named_objection'|'dated_followup'|'fog'
   summary       TEXT,
   outcome       TEXT,                      -- free text from classifier
   next_action   TEXT,

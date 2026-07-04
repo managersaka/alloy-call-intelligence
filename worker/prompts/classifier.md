@@ -19,5 +19,12 @@ Output schema:
   "confidence": 0.0,
   "summary": "1-2 sentence factual summary of the call",
   "outcome": "what state the call ended in, one line",
-  "next_action": "concrete follow-up owed, or 'none'"
+  "next_action": "concrete follow-up owed, or 'none'",
+  "clarity_outcome": "booked | named_objection | dated_followup | fog | null"
 }
+
+clarity_outcome — for "sales" calls ONLY (null for every other classification). How the call actually ended:
+- "booked" — a session/visit was booked with a specific date and time stated on the call.
+- "named_objection" — the staff member surfaced a concrete, specific objection (price, spouse, schedule, injury) and addressed it.
+- "dated_followup" — a follow-up commitment with a specific date (or day) was said out loud by either party.
+- "fog" — none of the above: no answer, voicemail, "call me later"/"I'll think about it" accepted without a date, or the call just ended. When in doubt, it's fog.

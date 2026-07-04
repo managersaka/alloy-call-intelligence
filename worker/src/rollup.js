@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIN_N = Number(process.env.MIN_N || 5);
+const MIN_EVAL_SEC = Number(process.env.MIN_EVAL_SEC || 180);
 
 const db = openDb();
 const now = new Date();
@@ -37,25 +38,50 @@ function agg(rows) {
 }
 
 // Window by CALL date, not scoring date — backfills score old calls "today"
-// and would otherwise flood the rolling window.
+// and would otherwise flood the rolling window. Rubric averages only count
+// graded conversations (>= MIN_EVAL_SEC); shorter scored rows (early backfill)
+// are excluded here too so the average stays comparable.
 const WINDOW_SQL = `
   SELECT s.caller, s.call_type, s.weighted_total, s.booked
   FROM call_scores s JOIN calls c ON c.id = s.call_id
-  WHERE c.started_at >= ? AND s.call_type != 'misrouted'`;
+  WHERE c.started_at >= ? AND s.call_type != 'misrouted'
+    AND (c.duration_sec IS NULL OR c.duration_sec >= ${MIN_EVAL_SEC})`;
 const window4w = db.prepare(WINDOW_SQL).all(fourWeeksAgo);
 const window1w = db.prepare(WINDOW_SQL).all(oneWeekAgo);
+
+// Clarity discipline is tracked for EVERY sales call (classifier-emitted),
+// including the sub-MIN_EVAL_SEC dials the rubric never sees. Fog on a short
+// call is still a caller failure — this is where "no fog" gets enforced.
+const CLARITY_SQL = `
+  SELECT staff caller, clarity_outcome FROM calls
+  WHERE classification = 'sales' AND started_at >= ? AND clarity_outcome IS NOT NULL`;
+function clarityAgg(rows) {
+  const byCaller = {};
+  for (const r of rows) (byCaller[r.caller || 'unknown'] ||= []).push(r.clarity_outcome);
+  return Object.entries(byCaller).map(([caller, list]) => ({
+    caller,
+    n: list.length,
+    fogRate: (list.filter((o) => o === 'fog').length / list.length).toFixed(2),
+    bookedRate: (list.filter((o) => o === 'booked').length / list.length).toFixed(2),
+  }));
+}
+const clarity4w = clarityAgg(db.prepare(CLARITY_SQL).all(fourWeeksAgo));
 
 const rolling = agg(window4w);
 const weekly = agg(window1w);
 
-const lines = ['scope,caller,call_type,n,avg_score,booked_rate,scorecard_value'];
+const lines = ['scope,caller,call_type,n,avg_score,booked_rate,fog_rate,scorecard_value'];
 for (const r of rolling) {
   // Minimum-n rule: under MIN_N, the scorecard shows the count, not a judgable score.
   const scorecard = r.n >= MIN_N ? r.avg : `n=${r.n} (below min ${MIN_N})`;
-  lines.push(`rolling_4w,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},"${scorecard}"`);
+  lines.push(`rolling_4w,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},,"${scorecard}"`);
 }
 for (const r of weekly) {
-  lines.push(`weekly_raw,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},caller_facing_only`);
+  lines.push(`weekly_raw,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},,caller_facing_only`);
+}
+for (const r of clarity4w) {
+  const scorecard = r.n >= MIN_N ? `fog ${Math.round(r.fogRate * 100)}%` : `n=${r.n} (below min ${MIN_N})`;
+  lines.push(`clarity_4w,${r.caller},all_sales_calls,${r.n},,${r.bookedRate},${r.fogRate},"${scorecard}"`);
 }
 
 const outDir = path.join(__dirname, '..', 'data', 'rollups');
@@ -64,6 +90,7 @@ const outFile = path.join(outDir, `rollup_${now.toISOString().slice(0, 10)}.csv`
 writeFileSync(outFile, lines.join('\n'));
 console.log(`rollup written: ${outFile}`);
 console.table([...rolling.map((r) => ({ scope: '4w', ...r }))]);
+console.table([...clarity4w.map((r) => ({ scope: 'clarity_4w', ...r }))]);
 
 // TODO: push rolling_4w rows to the "Call Quality" tab of Alloy_KPI workbook via
 // googleapis + service account (reuse creds from the QuickBooks P&L sync).

@@ -24,6 +24,7 @@ const staffName = (idOrName) => (idOrName ? USERS[idOrName] || idOrName : null);
 
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
 const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
+const MIN_EVAL_SEC = Number(process.env.MIN_EVAL_SEC || 180); // sales calls under this: clarity tracked (classifier), but no full-rubric eval
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // set the same value in the GHL workflow header
 
 // ---------- Feed 1: real-time webhook ----------
@@ -192,10 +193,11 @@ async function processQueueOnce() {
       summary: c.summary,
       outcome: c.outcome,
       next_action: c.next_action,
+      clarity_outcome: classification === 'sales' ? c.clarity_outcome || null : null,
     });
     console.log(`classified ${call.id}: ${classification} (${c.confidence})`);
   });
-  await drain(() => unscoredSalesCalls(db), async (call) => {
+  await drain(() => unscoredSalesCalls(db, MIN_EVAL_SEC), async (call) => {
     const { json, private_report } = await evaluateSalesCall(call.transcript, {
       caller: call.staff,
       location: call.location_name,

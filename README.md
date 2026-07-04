@@ -50,6 +50,7 @@ alloy-call-intelligence/
 ## Measurement design (do not casually change)
 
 - **Process over outcome.** `booked` is stored for trend analysis; it never feeds a score. Clarity (booked / named objection / dated follow-up) is the enforced standard.
+- **3-minute grading floor (decided 2026-07-04 from backfill data).** Full-rubric evaluation only for sales calls >= `MIN_EVAL_SEC` (180s) — shorter calls are dials/brief connects that average 11/100 and poison the mean. **Clarity outcome is still tracked for EVERY sales call** (the Haiku classifier emits it), because fog on a 90-second brush-off is exactly the failure the standard exists to catch. Rollup: rubric average = graded conversations only; `clarity_4w` rows = all sales calls.
 - **QC and SPS never blend** in any average — different rubrics.
 - **Rolling 4-week average** is the L10 scorecard number; weekly raw is caller-facing only.
 - **Min-n = 5**: below that, the dashboard shows the count, not a score.
