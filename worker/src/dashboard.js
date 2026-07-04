@@ -63,6 +63,17 @@ function render(db) {
     WHERE s.call_type != 'misrouted'
     ORDER BY c.started_at DESC LIMIT 25`).all();
 
+  const novelQuestions = db.prepare(`
+    SELECT q.question_verbatim, q.answer_given, q.created_at, c.classification, c.location_name, c.staff
+    FROM qa_extractions q JOIN calls c ON c.id = q.call_id
+    WHERE q.novel_flag = 1 ORDER BY q.created_at DESC LIMIT 15`).all();
+
+  const taxonomyHits = db.prepare(`
+    SELECT q.taxonomy_id, COUNT(*) n
+    FROM qa_extractions q JOIN calls c ON c.id = q.call_id
+    WHERE q.taxonomy_id IS NOT NULL AND c.started_at >= datetime('now', '-28 days')
+    GROUP BY q.taxonomy_id ORDER BY n DESC LIMIT 12`).all();
+
   const reviewQueue = db.prepare(`
     SELECT started_at, location_name, contact_name, staff, duration_sec, summary
     FROM calls WHERE classification = 'REVIEW' AND started_at >= datetime('now', '-14 days')
@@ -142,6 +153,18 @@ ${recent.map((r) => `<tr>
   <td>${esc(r.shareable_summary)}<details><summary>coaching priority + private report</summary><b>${esc(r.coaching_priority)}</b><pre>${esc(r.private_report)}</pre></details></td>
 </tr>`).join('')}
 </table>
+
+<h2>Knowledgebase signals</h2>
+<div class="tiles">
+  ${taxonomyHits.map((t) => tile(esc(t.taxonomy_id), t.n)).join('') || '<div class="note">No taxonomy hits yet — Q&A extraction runs with each poll.</div>'}
+</div>
+<div class="note">Question frequency, last 4 weeks — what leads and members actually ask.</div>
+${novelQuestions.length ? `
+<h2>Novel questions — not in the protocol taxonomy (drift signal)</h2>
+<table><tr><th>When</th><th>Who</th><th>Question</th><th>Answer given</th></tr>
+${novelQuestions.map((r) => `<tr><td>${esc((r.created_at || '').slice(0, 10))}</td><td>${esc(r.staff)} · ${esc(r.location_name)} · ${esc(r.classification)}</td><td>${esc(r.question_verbatim)}</td><td>${esc(r.answer_given)}</td></tr>`).join('')}
+</table>
+<div class="note">Recurring novel questions deserve a new protocol section + template.</div>` : ''}
 
 <h2>Review queue — low-confidence classifications (14 days)</h2>
 <table><tr><th>When</th><th>Studio</th><th>Contact</th><th>Staff</th><th>Length</th><th>Classifier summary</th></tr>

@@ -14,6 +14,7 @@ export function openDb() {
   db.exec(schema);
   // Migrations for DBs created before the column existed (CREATE IF NOT EXISTS won't alter).
   try { db.exec('ALTER TABLE calls ADD COLUMN clarity_outcome TEXT'); } catch { /* already there */ }
+  try { db.exec('ALTER TABLE calls ADD COLUMN qa_done INTEGER DEFAULT 0'); } catch { /* already there */ }
   // Cross-process work claims: the webhook server and cron polls are separate
   // processes sharing this DB; a claim ensures a call is classified/scored
   // (and its report emailed) exactly once.
@@ -66,6 +67,27 @@ export function insertScore(db, s) {
 
 export function unprocessedCalls(db, limit = 20) {
   return db.prepare(`SELECT * FROM calls WHERE processed = 0 AND transcript IS NOT NULL LIMIT ?`).all(limit);
+}
+
+// Classified conversations that haven't had Q&A extracted yet (admin_other/REVIEW excluded).
+export function qaPendingCalls(db, minCallSec = 45, limit = 15) {
+  return db.prepare(`
+    SELECT * FROM calls
+    WHERE processed = 1 AND qa_done = 0 AND transcript IS NOT NULL
+      AND classification IN ('sales', 'member_request', 'accountability')
+      AND (duration_sec IS NULL OR duration_sec >= ?)
+    LIMIT ?
+  `).all(minCallSec, limit);
+}
+
+export function insertQaRows(db, callId, rows) {
+  const stmt = db.prepare(`
+    INSERT INTO qa_extractions (call_id, question_verbatim, answer_given, taxonomy_id, novel_flag)
+    VALUES (?, ?, ?, ?, ?)`);
+  for (const r of rows) {
+    stmt.run(callId, r.question_verbatim, r.answer_given ?? null, r.taxonomy_id ?? null, r.novel ? 1 : 0);
+  }
+  db.prepare('UPDATE calls SET qa_done = 1 WHERE id = ?').run(callId);
 }
 
 export function unscoredSalesCalls(db, minEvalSec = 0, limit = 10) {

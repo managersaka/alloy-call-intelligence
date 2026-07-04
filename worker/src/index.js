@@ -6,9 +6,9 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, claim, releaseClaim, cleanStaleClaims } from './db.js';
+import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
-import { classifyCall, evaluateSalesCall } from './claude.js';
+import { classifyCall, evaluateSalesCall, extractQa } from './claude.js';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
 
@@ -201,17 +201,18 @@ async function processQueue() {
 }
 
 // Drain a batched queue query until empty, skipping calls that already failed
-// this pass so one bad transcript can't loop forever.
+// this pass (one bad transcript can't loop forever) or that returned 'skip'
+// (claimed by another process — it will complete them, not us).
 async function drain(nextBatch, handle) {
-  const failed = new Set();
+  const skip = new Set();
   while (true) {
-    const batch = nextBatch().filter((c) => !failed.has(c.id));
+    const batch = nextBatch().filter((c) => !skip.has(c.id));
     if (!batch.length) break;
     for (const call of batch) {
       try {
-        await handle(call);
+        if ((await handle(call)) === 'skip') skip.add(call.id);
       } catch (e) {
-        failed.add(call.id);
+        skip.add(call.id);
         console.error(`processing failed for ${call.id}:`, e.message);
       }
     }
@@ -220,7 +221,7 @@ async function drain(nextBatch, handle) {
 
 async function processQueueOnce() {
   await drain(() => unprocessedCalls(db), async (call) => {
-    if (!claim(db, `classify:${call.id}`)) return; // another process has it
+    if (!claim(db, `classify:${call.id}`)) return 'skip'; // another process has it
     try {
       if (call.duration_sec != null && call.duration_sec < MIN_CALL_SEC) {
         setClassification(db, call.id, {
@@ -250,7 +251,7 @@ async function processQueueOnce() {
     }
   });
   await drain(() => unscoredSalesCalls(db, MIN_EVAL_SEC), async (call) => {
-    if (!claim(db, `score:${call.id}`)) return; // another process has it
+    if (!claim(db, `score:${call.id}`)) return 'skip'; // another process has it
     let json, private_report;
     try {
       ({ json, private_report } = await evaluateSalesCall(call.transcript, {
@@ -281,6 +282,19 @@ async function processQueueOnce() {
     });
     console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
     await deliverReport(call, json, private_report);
+  });
+  // Phase 2: Q&A extraction for the agent knowledgebase (sales/member/accountability calls).
+  await drain(() => qaPendingCalls(db, MIN_CALL_SEC), async (call) => {
+    if (!claim(db, `qa:${call.id}`)) return 'skip';
+    try {
+      const { qa } = await extractQa(call.transcript);
+      insertQaRows(db, call.id, Array.isArray(qa) ? qa : []);
+      const novel = (qa || []).filter((r) => r.novel).length;
+      console.log(`qa ${call.id}: ${(qa || []).length} pairs${novel ? ` (${novel} novel)` : ''}`);
+    } catch (e) {
+      releaseClaim(db, `qa:${call.id}`);
+      throw e;
+    }
   });
 }
 

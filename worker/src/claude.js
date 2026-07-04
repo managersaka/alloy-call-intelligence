@@ -23,6 +23,7 @@ const EVALUATOR_MODEL = process.env.EVALUATOR_MODEL || (MODE === 'cli' ? 'sonnet
 
 const CLASSIFIER_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'classifier.md'), 'utf8');
 const EVALUATOR_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'evaluator.md'), 'utf8');
+const QA_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'qa-extractor.md'), 'utf8');
 
 async function askApi({ model, system, user, max_tokens }) {
   const res = await fetch(API, {
@@ -107,6 +108,16 @@ export async function classifyCall(transcript) {
     system: CLASSIFIER_PROMPT,
     user: `Transcript:\n\n${transcript.slice(0, 30000)}`,
     max_tokens: 500,
+  });
+  return extractJsonBlock(text).json;
+}
+
+export async function extractQa(transcript) {
+  const text = await ask({
+    model: CLASSIFIER_MODEL,
+    system: QA_PROMPT,
+    user: `Transcript:\n\n${transcript.slice(0, 30000)}`,
+    max_tokens: 1500,
   });
   return extractJsonBlock(text).json;
 }

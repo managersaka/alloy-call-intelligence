@@ -20,10 +20,52 @@ function doPost(e) {
     if (body.action === 'test') return json_({ ok: true, pong: true });
     if (body.action === 'rollup') return json_(writeRollup_(body));
     if (body.action === 'report') return json_(sendReport_(body));
+    if (body.action === 'listFolder') return json_(listFolder_(body));
+    if (body.action === 'getDocs') return json_(getDocs_(body));
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
   }
+}
+
+// ---- Drive read-only export (for the transcript backfill) ----
+
+function driveGet_(url) {
+  var res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw new Error('drive ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
+  return res;
+}
+
+function listFolder_(body) {
+  if (!body.folderId) return { ok: false, error: 'no folderId' };
+  var q = encodeURIComponent("'" + body.folderId + "' in parents and trashed = false");
+  var url = 'https://www.googleapis.com/drive/v3/files?q=' + q +
+    '&fields=files(id,name,mimeType,createdTime)&pageSize=200';
+  var data = JSON.parse(driveGet_(url).getContentText());
+  return { ok: true, items: data.files || [] };
+}
+
+function getDocs_(body) {
+  var ids = body.ids || [];
+  if (ids.length > 15) return { ok: false, error: 'max 15 ids per call' };
+  var docs = [];
+  for (var i = 0; i < ids.length; i++) {
+    try {
+      var meta = JSON.parse(driveGet_('https://www.googleapis.com/drive/v3/files/' + ids[i] + '?fields=id,name,mimeType,createdTime').getContentText());
+      if (meta.mimeType !== 'application/vnd.google-apps.document') {
+        docs.push({ id: ids[i], name: meta.name, error: 'not a google doc: ' + meta.mimeType });
+        continue;
+      }
+      var text = driveGet_('https://www.googleapis.com/drive/v3/files/' + ids[i] + '/export?mimeType=text/plain').getContentText();
+      docs.push({ id: meta.id, name: meta.name, created: meta.createdTime, text: text });
+    } catch (err) {
+      docs.push({ id: ids[i], error: String(err) });
+    }
+  }
+  return { ok: true, docs: docs };
 }
 
 function writeRollup_(body) {
