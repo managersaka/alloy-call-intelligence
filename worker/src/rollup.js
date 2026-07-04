@@ -36,12 +36,14 @@ function agg(rows) {
   });
 }
 
-const window4w = db.prepare(
-  `SELECT caller, call_type, weighted_total, booked FROM call_scores WHERE scored_at >= ? AND call_type != 'misrouted'`
-).all(fourWeeksAgo);
-const window1w = db.prepare(
-  `SELECT caller, call_type, weighted_total, booked FROM call_scores WHERE scored_at >= ? AND call_type != 'misrouted'`
-).all(oneWeekAgo);
+// Window by CALL date, not scoring date — backfills score old calls "today"
+// and would otherwise flood the rolling window.
+const WINDOW_SQL = `
+  SELECT s.caller, s.call_type, s.weighted_total, s.booked
+  FROM call_scores s JOIN calls c ON c.id = s.call_id
+  WHERE c.started_at >= ? AND s.call_type != 'misrouted'`;
+const window4w = db.prepare(WINDOW_SQL).all(fourWeeksAgo);
+const window1w = db.prepare(WINDOW_SQL).all(oneWeekAgo);
 
 const rolling = agg(window4w);
 const weekly = agg(window1w);

@@ -206,7 +206,7 @@ async function processQueueOnce() {
       call_id: call.id,
       rubric_version: json.rubric_version,
       call_type: json.call_type,
-      caller: json.caller || call.staff,
+      caller: call.staff || json.caller || null, // our attribution, not the model's echo
       location_name: call.location_name,
       sub_scores: JSON.stringify(json.sub_scores || {}),
       weighted_total: json.weighted_total ?? null,
