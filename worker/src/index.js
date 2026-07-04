@@ -9,10 +9,13 @@ import express from 'express';
 import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
 import { classifyCall, evaluateSalesCall } from './claude.js';
+import { bridge, bridgeEnabled } from './bridge.js';
+import { registerDashboard } from './dashboard.js';
 
 const db = openDb();
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+registerDashboard(app, db); // GET /call-intel (Caddy adds basic auth in front)
 
 // Location registry: locationId → { name, token }
 const LOCATIONS = JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]');
@@ -22,6 +25,12 @@ const locById = Object.fromEntries(LOCATIONS.map((l) => [l.locationId, l]));
 const USERS = JSON.parse(process.env.GHL_USERS_JSON || '{}');
 const staffName = (idOrName) => (idOrName ? USERS[idOrName] || idOrName : null);
 
+// Report delivery: staff display name → email. Reports for calls older than
+// REPORT_MAX_AGE_DAYS are stored but not emailed (protects against backfills).
+const STAFF_EMAILS = JSON.parse(process.env.STAFF_EMAILS_JSON || '{}');
+const REPORT_FALLBACK_EMAIL = process.env.REPORT_FALLBACK_EMAIL || null;
+const REPORT_MAX_AGE_DAYS = Number(process.env.REPORT_MAX_AGE_DAYS || 3);
+
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
 const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
 const MIN_EVAL_SEC = Number(process.env.MIN_EVAL_SEC || 180); // sales calls under this: clarity tracked (classifier), but no full-rubric eval
@@ -29,33 +38,65 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET; // set the same value in the 
 
 // ---------- Feed 1: real-time webhook ----------
 app.post('/webhook/ghl-call', async (req, res) => {
-  if (WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== WEBHOOK_SECRET) {
+  // Secret via header (preferred) or ?secret= (GHL webhook actions without custom headers).
+  const supplied = req.headers['x-webhook-secret'] || req.query.secret;
+  if (WEBHOOK_SECRET && supplied !== WEBHOOK_SECRET) {
     return res.status(401).json({ ok: false });
   }
   res.json({ ok: true }); // ack fast; process async
   try {
     const p = req.body || {};
+    console.log('webhook payload keys:', Object.keys(p).join(','));
     // GHL workflow payloads vary by trigger config — map the fields you wire up.
-    const locationId = p.locationId || p.location_id;
+    const locationId = p.locationId || p.location_id || p.location?.id;
+    const contactId = p.contactId || p.contact_id;
     const loc = locById[locationId];
     if (!loc) return console.warn('webhook: unknown location', locationId);
     // Recording/transcript can lag ~1 min after call end — delay before fetch.
     await sleep(90_000);
-    await ingestCallMessage(loc, {
-      id: p.messageId || p.message_id,
-      conversationId: p.conversationId || p.conversation_id,
-      contactId: p.contactId,
-      contactName: p.contactName || p.full_name,
-      direction: p.direction,
-      staff: staffName(p.userId) || p.userName || p.assignedUser,
-      startedAt: p.dateAdded || new Date().toISOString(),
-      durationSec: p.callDuration ? Number(p.callDuration) : null,
-    });
+    if (p.messageId || p.message_id) {
+      await ingestCallMessage(loc, {
+        id: p.messageId || p.message_id,
+        conversationId: p.conversationId || p.conversation_id,
+        contactId,
+        contactName: p.contactName || p.full_name || p.name,
+        direction: p.direction,
+        staff: staffName(p.userId) || p.userName || p.assignedUser,
+        startedAt: p.dateAdded || new Date().toISOString(),
+        durationSec: p.callDuration ? Number(p.callDuration) : null,
+      });
+    } else if (contactId) {
+      // No messageId in the payload — sweep this contact's conversations instead.
+      await ingestByContact(loc, contactId);
+    } else {
+      return console.warn('webhook: no messageId or contactId in payload');
+    }
     await processQueue();
   } catch (e) {
     console.error('webhook processing error:', e.message);
   }
 });
+
+// Ingest all recent call messages for one contact (webhook fallback path).
+async function ingestByContact(loc, contactId) {
+  const conv = await searchConversations(loc.token, loc.locationId, { limit: 5, contactId });
+  for (const c of conv?.conversations || []) {
+    const msgs = await getMessages(loc.token, c.id);
+    const list = msgs?.messages?.messages || msgs?.messages || [];
+    for (const m of list.filter(isCallMessage)) {
+      await ingestCallMessage(loc, {
+        id: m.id,
+        conversationId: c.id,
+        contactId: c.contactId,
+        contactName: c.fullName || c.contactName,
+        direction: m.direction,
+        staff: staffName(m.userId),
+        startedAt: m.dateAdded,
+        durationSec: m.meta?.call?.duration ?? null,
+      });
+    }
+  }
+}
 
 // ---------- Feed 2: polling sweep ----------
 export async function pollOnce() {
@@ -221,8 +262,39 @@ async function processQueueOnce() {
       coaching_priority: json.coaching_priority || null,
     });
     console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
-    // TODO Phase 3: deliver private_report to the caller (email/SMS/Slack).
+    await deliverReport(call, json, private_report);
   });
+}
+
+// ---------- Phase 3: private report to the caller, minutes after the call ----------
+async function deliverReport(call, json, private_report) {
+  if (!bridgeEnabled() || json.call_type === 'misrouted') return;
+  const ageDays = call.started_at ? (Date.now() - Date.parse(call.started_at)) / 86400_000 : Infinity;
+  if (ageDays > REPORT_MAX_AGE_DAYS) return; // backfill — store only, never email
+  const to = STAFF_EMAILS[call.staff] || REPORT_FALLBACK_EMAIL;
+  if (!to) return console.warn(`no email for staff "${call.staff}" and no fallback — report not delivered`);
+  try {
+    const when = (call.started_at || '').slice(0, 16).replace('T', ' ');
+    const header = [
+      `Caller: ${call.staff || 'unknown'}   Studio: ${call.location_name}`,
+      `Contact: ${call.contact_name || 'unknown'}   When: ${when}   Length: ${call.duration_sec ? Math.round(call.duration_sec / 60) + ' min' : '?'}`,
+      `Score: ${json.weighted_total}/100 (${json.call_type})   Clarity: ${json.clarity_outcome}`,
+      ``,
+      `COACHING PRIORITY: ${json.coaching_priority || '—'}`,
+      ``,
+      `This report is private to you. The team scorecard only sees scores and the shareable summary.`,
+      `--------------------------------------------------------------------`,
+      ``,
+    ].join('\n');
+    await bridge('report', {
+      to,
+      subject: `Call review: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100, ${json.clarity_outcome}`,
+      text: header + private_report,
+    });
+    console.log(`report emailed to ${to} for ${call.id}`);
+  } catch (e) {
+    console.error(`report delivery failed for ${call.id}:`, e.message);
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

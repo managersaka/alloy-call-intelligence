@@ -9,6 +9,7 @@
 // service account — same pattern as the QuickBooks P&L automation.
 
 import { openDb } from './db.js';
+import { bridge, bridgeEnabled } from './bridge.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,18 +71,19 @@ const clarity4w = clarityAgg(db.prepare(CLARITY_SQL).all(fourWeeksAgo));
 const rolling = agg(window4w);
 const weekly = agg(window1w);
 
+const scorecardOf = (r) => (r.n >= MIN_N ? r.avg : `n=${r.n} (below min ${MIN_N})`);
+const clarityScorecardOf = (r) => (r.n >= MIN_N ? `fog ${Math.round(r.fogRate * 100)}%` : `n=${r.n} (below min ${MIN_N})`);
+
 const lines = ['scope,caller,call_type,n,avg_score,booked_rate,fog_rate,scorecard_value'];
 for (const r of rolling) {
   // Minimum-n rule: under MIN_N, the scorecard shows the count, not a judgable score.
-  const scorecard = r.n >= MIN_N ? r.avg : `n=${r.n} (below min ${MIN_N})`;
-  lines.push(`rolling_4w,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},,"${scorecard}"`);
+  lines.push(`rolling_4w,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},,"${scorecardOf(r)}"`);
 }
 for (const r of weekly) {
   lines.push(`weekly_raw,${r.caller},${r.call_type},${r.n},${r.avg ?? ''},${r.bookedRate ?? ''},,caller_facing_only`);
 }
 for (const r of clarity4w) {
-  const scorecard = r.n >= MIN_N ? `fog ${Math.round(r.fogRate * 100)}%` : `n=${r.n} (below min ${MIN_N})`;
-  lines.push(`clarity_4w,${r.caller},all_sales_calls,${r.n},,${r.bookedRate},${r.fogRate},"${scorecard}"`);
+  lines.push(`clarity_4w,${r.caller},all_sales_calls,${r.n},,${r.bookedRate},${r.fogRate},"${clarityScorecardOf(r)}"`);
 }
 
 const outDir = path.join(__dirname, '..', 'data', 'rollups');
@@ -92,5 +94,18 @@ console.log(`rollup written: ${outFile}`);
 console.table([...rolling.map((r) => ({ scope: '4w', ...r }))]);
 console.table([...clarity4w.map((r) => ({ scope: 'clarity_4w', ...r }))]);
 
-// TODO: push rolling_4w rows to the "Call Quality" tab of Alloy_KPI workbook via
-// googleapis + service account (reuse creds from the QuickBooks P&L sync).
+// Push the same rows to the "Call Quality" tab of both L10 sheets via the bridge.
+if (bridgeEnabled()) {
+  try {
+    const result = await bridge('rollup', {
+      generatedAt: now.toISOString(),
+      rolling: rolling.map((r) => ({ ...r, scorecard: scorecardOf(r) })),
+      clarity: clarity4w.map((r) => ({ ...r, scorecard: clarityScorecardOf(r) })),
+    });
+    console.log('pushed to L10 sheets:', result.written.join(', '));
+  } catch (e) {
+    console.error('L10 sheet push failed (CSV still written):', e.message);
+  }
+} else {
+  console.log('bridge not configured — skipping L10 sheet push');
+}

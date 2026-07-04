@@ -29,9 +29,10 @@ async function ghlFetch(path, token, opts = {}) {
   return ct.includes('json') ? res.json() : res.text();
 }
 
-/** Search conversations updated since a timestamp for one location. */
-export async function searchConversations(token, locationId, { limit = 100 } = {}) {
+/** Search conversations for one location, most recent first; optionally one contact's. */
+export async function searchConversations(token, locationId, { limit = 100, contactId } = {}) {
   const q = new URLSearchParams({ locationId, limit: String(limit), sortBy: 'last_message_date', sort: 'desc' });
+  if (contactId) q.set('contactId', contactId);
   return ghlFetch(`/conversations/search?${q}`, token);
 }
 
