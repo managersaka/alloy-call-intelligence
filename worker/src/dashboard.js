@@ -16,17 +16,27 @@ export function registerDashboard(app, db) {
   });
 }
 
+const STUDIOS = (() => {
+  try { return JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]').map((l) => l.name); } catch { return []; }
+})();
+
 function render(db) {
-  const week = db.prepare(`
-    SELECT COUNT(*) total,
+  const weekRows = db.prepare(`
+    SELECT location_name,
+           COUNT(*) total,
            SUM(classification = 'sales') sales,
            SUM(classification = 'REVIEW') review,
            SUM(clarity_outcome = 'fog') fog,
            SUM(clarity_outcome = 'booked') booked
-    FROM calls WHERE started_at >= datetime('now', '-7 days')`).get();
-  const scoredWeek = db.prepare(`
-    SELECT COUNT(*) n FROM call_scores s JOIN calls c ON c.id = s.call_id
-    WHERE c.started_at >= datetime('now', '-7 days') AND s.call_type != 'misrouted'`).get();
+    FROM calls WHERE started_at >= datetime('now', '-7 days')
+    GROUP BY location_name`).all();
+  const scoredRows = db.prepare(`
+    SELECT c.location_name, COUNT(*) n FROM call_scores s JOIN calls c ON c.id = s.call_id
+    WHERE c.started_at >= datetime('now', '-7 days') AND s.call_type != 'misrouted'
+    GROUP BY c.location_name`).all();
+  const weekBy = Object.fromEntries(weekRows.map((r) => [r.location_name, r]));
+  const scoredBy = Object.fromEntries(scoredRows.map((r) => [r.location_name, r.n]));
+  const studios = [...new Set([...STUDIOS, ...weekRows.map((r) => r.location_name).filter(Boolean)])];
 
   const rubric4w = db.prepare(`
     SELECT s.caller, s.call_type, COUNT(*) n, ROUND(AVG(s.weighted_total), 1) avg,
@@ -61,7 +71,20 @@ function render(db) {
   const tile = (label, value, sub = '') => `
     <div class="tile"><div class="tile-v">${value}</div><div class="tile-l">${label}</div>${sub ? `<div class="tile-s">${sub}</div>` : ''}</div>`;
 
-  const fogRate = week.sales ? week.fog / week.sales : null;
+  const studioTiles = (name) => {
+    const w = weekBy[name] || { total: 0, sales: 0, review: 0, fog: 0, booked: 0 };
+    const fogRate = w.sales ? w.fog / w.sales : null;
+    return `
+<h2>Last 7 days — ${esc(name)}</h2>
+<div class="tiles">
+  ${tile('Calls', w.total ?? 0)}
+  ${tile('Sales calls', w.sales ?? 0)}
+  ${tile('Rubric-scored', scoredBy[name] ?? 0)}
+  ${tile('Booked', w.booked ?? 0)}
+  ${tile('Fog rate (sales)', pct(fogRate))}
+  ${tile('Needs review', w.review ?? 0)}
+</div>`;
+  };
 
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -95,15 +118,7 @@ function render(db) {
 </style></head><body>
 <header><h1>Alloy <span>Call Intelligence</span></h1><div class="sub">generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · read-only</div></header>
 <main>
-<h2>Last 7 days</h2>
-<div class="tiles">
-  ${tile('Calls', week.total ?? 0)}
-  ${tile('Sales calls', week.sales ?? 0)}
-  ${tile('Rubric-scored', scoredWeek.n ?? 0)}
-  ${tile('Booked', week.booked ?? 0)}
-  ${tile('Fog rate (sales)', pct(fogRate))}
-  ${tile('Needs review', week.review ?? 0)}
-</div>
+${studios.map(studioTiles).join('')}
 
 <h2>Rubric score — rolling 4 weeks (graded conversations ≥ ${MIN_EVAL_SEC / 60} min)</h2>
 <table><tr><th>Caller</th><th>Type</th><th>n</th><th>Avg score</th><th>Booked rate</th></tr>
