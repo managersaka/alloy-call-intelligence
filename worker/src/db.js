@@ -14,7 +14,24 @@ export function openDb() {
   db.exec(schema);
   // Migrations for DBs created before the column existed (CREATE IF NOT EXISTS won't alter).
   try { db.exec('ALTER TABLE calls ADD COLUMN clarity_outcome TEXT'); } catch { /* already there */ }
+  // Cross-process work claims: the webhook server and cron polls are separate
+  // processes sharing this DB; a claim ensures a call is classified/scored
+  // (and its report emailed) exactly once.
+  db.exec(`CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, at TEXT DEFAULT (datetime('now')))`);
   return db;
+}
+
+export function claim(db, key) {
+  return db.prepare('INSERT OR IGNORE INTO claims (key) VALUES (?)').run(key).changes === 1;
+}
+
+export function releaseClaim(db, key) {
+  db.prepare('DELETE FROM claims WHERE key = ?').run(key);
+}
+
+// Claims from crashed processes: anything older than 2h is abandoned work.
+export function cleanStaleClaims(db) {
+  return db.prepare(`DELETE FROM claims WHERE at < datetime('now', '-2 hours')`).run().changes;
 }
 
 export function upsertCall(db, call) {

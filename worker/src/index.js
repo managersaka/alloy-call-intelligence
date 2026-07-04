@@ -6,7 +6,7 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls } from './db.js';
+import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
 import { classifyCall, evaluateSalesCall } from './claude.js';
 import { bridge, bridgeEnabled } from './bridge.js';
@@ -99,10 +99,15 @@ async function ingestByContact(loc, contactId) {
 }
 
 // ---------- Feed 2: polling sweep ----------
+// POLL_CONVERSATIONS trades depth for speed: 25 for the every-10-min quick poll,
+// 100 (default) for the nightly full sweep. Cron wraps runs in flock so poll
+// processes never overlap; claims guard against webhook-process overlap.
 export async function pollOnce() {
+  cleanStaleClaims(db);
+  const limit = Number(process.env.POLL_CONVERSATIONS || 100);
   for (const loc of LOCATIONS) {
     try {
-      const conv = await searchConversations(loc.token, loc.locationId);
+      const conv = await searchConversations(loc.token, loc.locationId, { limit });
       for (const c of conv?.conversations || []) {
         const msgs = await getMessages(loc.token, c.id);
         const list = msgs?.messages?.messages || msgs?.messages || [];
@@ -215,36 +220,49 @@ async function drain(nextBatch, handle) {
 
 async function processQueueOnce() {
   await drain(() => unprocessedCalls(db), async (call) => {
-    if (call.duration_sec != null && call.duration_sec < MIN_CALL_SEC) {
+    if (!claim(db, `classify:${call.id}`)) return; // another process has it
+    try {
+      if (call.duration_sec != null && call.duration_sec < MIN_CALL_SEC) {
+        setClassification(db, call.id, {
+          classification: 'admin_other',
+          confidence: 1,
+          summary: `auto-skipped: ${call.duration_sec}s call, under ${MIN_CALL_SEC}s threshold`,
+          outcome: 'too short to classify',
+          next_action: 'none',
+        });
+        console.log(`skipped ${call.id}: ${call.duration_sec}s < ${MIN_CALL_SEC}s`);
+        return;
+      }
+      const c = await classifyCall(call.transcript);
+      const classification = c.confidence < CONFIDENCE_THRESHOLD ? 'REVIEW' : c.classification;
       setClassification(db, call.id, {
-        classification: 'admin_other',
-        confidence: 1,
-        summary: `auto-skipped: ${call.duration_sec}s call, under ${MIN_CALL_SEC}s threshold`,
-        outcome: 'too short to classify',
-        next_action: 'none',
+        classification,
+        confidence: c.confidence,
+        summary: c.summary,
+        outcome: c.outcome,
+        next_action: c.next_action,
+        clarity_outcome: classification === 'sales' ? c.clarity_outcome || null : null,
       });
-      console.log(`skipped ${call.id}: ${call.duration_sec}s < ${MIN_CALL_SEC}s`);
-      return;
+      console.log(`classified ${call.id}: ${classification} (${c.confidence})`);
+    } catch (e) {
+      releaseClaim(db, `classify:${call.id}`); // let the next run retry
+      throw e;
     }
-    const c = await classifyCall(call.transcript);
-    const classification = c.confidence < CONFIDENCE_THRESHOLD ? 'REVIEW' : c.classification;
-    setClassification(db, call.id, {
-      classification,
-      confidence: c.confidence,
-      summary: c.summary,
-      outcome: c.outcome,
-      next_action: c.next_action,
-      clarity_outcome: classification === 'sales' ? c.clarity_outcome || null : null,
-    });
-    console.log(`classified ${call.id}: ${classification} (${c.confidence})`);
   });
   await drain(() => unscoredSalesCalls(db, MIN_EVAL_SEC), async (call) => {
-    const { json, private_report } = await evaluateSalesCall(call.transcript, {
-      caller: call.staff,
-      location: call.location_name,
-      direction: call.direction,
-      duration_sec: call.duration_sec,
-    });
+    if (!claim(db, `score:${call.id}`)) return; // another process has it
+    let json, private_report;
+    try {
+      ({ json, private_report } = await evaluateSalesCall(call.transcript, {
+        caller: call.staff,
+        location: call.location_name,
+        direction: call.direction,
+        duration_sec: call.duration_sec,
+      }));
+    } catch (e) {
+      releaseClaim(db, `score:${call.id}`); // let the next run retry
+      throw e;
+    }
     insertScore(db, {
       call_id: call.id,
       rubric_version: json.rubric_version,
