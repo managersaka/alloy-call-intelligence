@@ -328,6 +328,8 @@ export const DASHBOARD_BASE = process.env.DASHBOARD_BASE || 'https://alloy-membe
 async function pushIndexRow(call, json) {
   if (!bridgeEnabled() || json.call_type === 'misrouted') return;
   try {
+    const claimed = db.prepare('UPDATE call_scores SET indexed = 1 WHERE call_id = ? AND indexed = 0').run(call.id);
+    if (claimed.changes !== 1) return; // already in the sheet
     await bridge('appendIndexRows', {
       rows: [{
         date: (call.started_at || '').slice(0, 16).replace('T', ' '),
@@ -344,6 +346,7 @@ async function pushIndexRow(call, json) {
       }],
     });
   } catch (e) {
+    db.prepare('UPDATE call_scores SET indexed = 0 WHERE call_id = ?').run(call.id); // retry via backfill
     console.error(`index push failed for ${call.id}:`, e.message);
   }
 }

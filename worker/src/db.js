@@ -16,6 +16,7 @@ export function openDb() {
   try { db.exec('ALTER TABLE calls ADD COLUMN clarity_outcome TEXT'); } catch { /* already there */ }
   try { db.exec('ALTER TABLE calls ADD COLUMN qa_done INTEGER DEFAULT 0'); } catch { /* already there */ }
   try { db.exec('ALTER TABLE calls ADD COLUMN kind TEXT'); } catch { /* already there */ } // 'sps' = in-person SPS transcript (Otter/Plaud import)
+  try { db.exec('ALTER TABLE call_scores ADD COLUMN indexed INTEGER DEFAULT 0'); } catch { /* already there */ } // pushed to the Analysis Index sheet
   // Cross-process work claims: the webhook server and cron polls are separate
   // processes sharing this DB; a claim ensures a call is classified/scored
   // (and its report emailed) exactly once.
