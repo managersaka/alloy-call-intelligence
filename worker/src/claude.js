@@ -123,6 +123,20 @@ export async function extractQa(transcript) {
   return extractJsonBlock(text).json;
 }
 
+// Plaud intake: the director opens each recording by declaring the session type
+// and member name ("this is an SPS with Jane Doe"). Extract that declaration.
+export async function extractPlaudIntro(openingText) {
+  const text = await ask({
+    model: CLASSIFIER_MODEL,
+    system: `You read the OPENING of an in-studio recording transcript from Alloy Personal Training. The staff member is supposed to declare what the session is and who it is with (e.g. "this is an SPS with Jane Doe", "accountability session with Bob"). Respond with ONLY JSON, no fences:
+{"declared_type": "sps | accountability | other | null", "member_name": "First Last or null", "director_name": "name if the staff member identifies themselves, else null"}
+SPS = Starting Point Session (also "starting point", "assessment", "consult"). If nothing is declared, infer nothing — return nulls.`,
+    user: `Opening of transcript:\n\n${openingText.slice(0, 2500)}`,
+    max_tokens: 200,
+  });
+  return extractJsonBlock(text).json;
+}
+
 // In-person SPS recordings (Otter/Plaud) — Prashant's dedicated rubric (sps-1.0).
 export async function evaluateSps(transcript, meta) {
   const text = await ask({
