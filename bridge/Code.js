@@ -128,20 +128,20 @@ function sendReport_(body) {
 var INDEX_HEADER = ['Date', 'Studio', 'Team Member', 'Contact', 'Type', 'Score', 'Clarity', 'Booked', 'Coaching Priority', 'Summary', 'Full Report'];
 
 function indexSheet_() {
+  // The sheet lives wherever Prashant files it (currently the EOS Tracking
+  // Spreadsheets shared location) — open by cached id (move-proof), else find
+  // by name ANYWHERE in Drive; only create as a last resort.
   var props = PropertiesService.getScriptProperties();
   var id = props.getProperty('INDEX_SHEET_ID');
   if (id) {
-    try { return SpreadsheetApp.openById(id); } catch (e) { /* recreate below */ }
+    try { return SpreadsheetApp.openById(id); } catch (e) { /* fall through */ }
   }
-  var plaud = DriveApp.getFolderById('1gek6OecFiM9fwNl0RfCLW_VTeu8z4ufQ');
-  var parent = plaud.getParents().next();
-  var existing = parent.getFilesByName('Alloy Call Intelligence — Analysis Index');
+  var existing = DriveApp.searchFiles("title contains 'Alloy Call Intelligence' and title contains 'Analysis Index' and trashed = false");
   var ss;
   if (existing.hasNext()) {
     ss = SpreadsheetApp.openById(existing.next().getId());
   } else {
     ss = SpreadsheetApp.create('Alloy Call Intelligence — Analysis Index');
-    DriveApp.getFileById(ss.getId()).moveTo(parent);
     var sh = ss.getSheets()[0];
     sh.setName('Analyses');
     sh.getRange(1, 1, 1, INDEX_HEADER.length).setValues([INDEX_HEADER]).setFontWeight('bold');
