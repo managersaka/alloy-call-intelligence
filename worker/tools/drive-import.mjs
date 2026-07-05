@@ -13,6 +13,10 @@ const FOLDERS = [
   { id: '1s6OjmVyeuh5bYO649gMQ0a4tdu5HU_19', location: 'Lincolnshire', label: 'Phone Call Transcripts (Lincolnshire)' },
   { id: '1lRAGwSmhuf5BGztSKTEmSLBHHbBKqGWj', location: 'Lincolnshire', label: 'Accountability Transcripts (Lincolnshire)' },
   { id: '1RVPHPxEE6g0db3SYMUNj4-gAjYsIOVbc', location: 'Lincolnshire', label: 'Alloy Lincolnshire Transcripts (root)' },
+  // SPS transcript folders ("Recordings" in the name, but they hold the Otter transcript docs).
+  // kind forces routing to the SPS analyzer regardless of filename.
+  { id: '10T2_JQTS2EbldjeYFRVQw1OgJuWUx1yh', location: 'Lincolnshire', label: 'SPS Recordings (Lincolnshire)', kind: 'sps' },
+  { id: '1MRI3lg6QNniVJMYN5pHSVdq4rN5ajkPL', location: 'Schaumburg', label: 'SPS Recordings (Schaumburg)', kind: 'sps' },
 ];
 // Folders whose names match this are evaluations/recordings/meetings — not call transcripts.
 const SKIP_FOLDER = /eval|recording|meeting|l10|coach/i;
@@ -50,14 +54,14 @@ function parseName(name, created) {
 const db = openDb();
 const exists = (id) => db.prepare('SELECT 1 FROM calls WHERE id = ?').get(id);
 
-async function collectDocs(folderId, location, depth = 0) {
+async function collectDocs(folderId, location, kind, depth = 0) {
   const { items } = await bridge('listFolder', { folderId });
   let docs = [];
   for (const it of items) {
     if (it.mimeType === 'application/vnd.google-apps.folder') {
-      if (depth < 2 && !SKIP_FOLDER.test(it.name)) docs = docs.concat(await collectDocs(it.id, location, depth + 1));
+      if (depth < 2 && !SKIP_FOLDER.test(it.name)) docs = docs.concat(await collectDocs(it.id, location, kind, depth + 1));
     } else if (it.mimeType === 'application/vnd.google-apps.document') {
-      docs.push({ ...it, location });
+      docs.push({ ...it, location, kind });
     }
   }
   return docs;
@@ -65,7 +69,7 @@ async function collectDocs(folderId, location, depth = 0) {
 
 let all = [];
 for (const f of FOLDERS) {
-  const docs = await collectDocs(f.id, f.location);
+  const docs = await collectDocs(f.id, f.location, f.kind || null);
   console.log(`${f.label}: ${docs.length} docs`);
   all = all.concat(docs);
 }
@@ -88,7 +92,7 @@ for (let i = 0; i < fresh.length; i += 10) {
     }
     const meta = parseName(doc.name, doc.created);
     upsertCall(db, {
-      kind: /\bSPS\b/i.test(doc.name) ? 'sps' : null, // routes to the SPS analyzer rubric
+      kind: src.kind || (/\bSPS\b/i.test(doc.name) ? 'sps' : null), // routes to the SPS analyzer rubric
       id: `drive_${doc.id}`,
       conversation_id: 'drive_backfill',
       contact_id: null,
