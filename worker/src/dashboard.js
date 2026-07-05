@@ -14,6 +14,54 @@ export function registerDashboard(app, db) {
       res.status(500).type('text').send(`dashboard error: ${e.message}`);
     }
   });
+  // Permalink for one analysis — the target of the Analysis Index sheet links.
+  app.get('/call-intel/report/:id', (req, res) => {
+    try {
+      const r = db.prepare(`
+        SELECT c.started_at, c.duration_sec, c.location_name, c.contact_name, c.transcript_source,
+               s.caller, s.call_type, s.rubric_version, s.weighted_total, s.clarity_outcome, s.booked,
+               s.sub_scores, s.failure_patterns, s.shareable_summary, s.coaching_priority, s.private_report
+        FROM call_scores s JOIN calls c ON c.id = s.call_id WHERE s.call_id = ?`).get(req.params.id);
+      if (!r) return res.status(404).type('text').send('no analysis for that id');
+      res.type('html').send(renderReport(r));
+    } catch (e) {
+      res.status(500).type('text').send(`report error: ${e.message}`);
+    }
+  });
+}
+
+function renderReport(r) {
+  const subs = Object.entries(JSON.parse(r.sub_scores || '{}'));
+  const patterns = JSON.parse(r.failure_patterns || '[]');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(r.contact_name)} — ${r.weighted_total}/100</title>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: Barlow, sans-serif; background: #f4f4f2; color: #2C2A29; padding-bottom: 40px; }
+  header { background: #2C2A29; color: #fff; padding: 16px 24px; }
+  header h1 { font-family: 'Saira Semi Condensed', sans-serif; text-transform: uppercase; font-size: 18px; }
+  header h1 span { color: #E1E000; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px; }
+  .meta { background: #fff; border-radius: 8px; padding: 14px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 16px; font-size: 14px; line-height: 1.7; }
+  .score { font-family: 'Saira Semi Condensed', sans-serif; font-size: 40px; font-weight: 700; float: right; }
+  table { border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+  td, th { border: 1px solid #e5e5e2; padding: 5px 10px; text-align: left; }
+  pre { white-space: pre-wrap; font-family: Barlow, sans-serif; font-size: 14px; background: #fff; border-radius: 8px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); line-height: 1.55; }
+  a { color: #2C2A29; }
+</style></head><body>
+<header><h1>Alloy <span>Call Intelligence</span> — analysis</h1></header>
+<main>
+<div class="meta"><div class="score">${r.weighted_total}<small style="font-size:16px">/100</small></div>
+<b>${esc(r.contact_name || 'unknown contact')}</b> · ${esc(r.location_name)} · ${esc((r.started_at || '').slice(0, 16).replace('T', ' '))}${r.duration_sec ? ` · ${Math.round(r.duration_sec / 60)} min` : ''}<br>
+Team member: <b>${esc(r.caller)}</b> · Type: ${esc(r.call_type)} · Rubric ${esc(r.rubric_version)} · Clarity: <b>${esc(r.clarity_outcome)}</b>${r.booked ? ' · BOOKED' : ''}<br>
+<b>Coaching priority:</b> ${esc(r.coaching_priority)}<br>
+${subs.length ? `<table><tr>${subs.map(([k]) => `<th>${esc(k)}</th>`).join('')}</tr><tr>${subs.map(([, v]) => `<td>${esc(v)}</td>`).join('')}</tr></table>` : ''}
+${patterns.length ? `<b>Failure patterns:</b> ${patterns.map(esc).join(' · ')}` : ''}
+</div>
+<pre>${esc(r.private_report)}</pre>
+<p style="margin-top:14px"><a href="/call-intel">← back to dashboard</a></p>
+</main></body></html>`;
 }
 
 const STUDIOS = (() => {
@@ -54,6 +102,31 @@ function render(db) {
     WHERE classification = 'sales' AND clarity_outcome IS NOT NULL
       AND started_at >= datetime('now', '-28 days')
     GROUP BY staff ORDER BY n DESC`).all();
+
+  const patternTrends = db.prepare(`
+    SELECT s.caller, s.failure_patterns, c.started_at
+    FROM call_scores s JOIN calls c ON c.id = s.call_id
+    WHERE c.started_at >= datetime('now', '-56 days') AND s.call_type != 'misrouted'`).all();
+  const patCounts = {};
+  const cutoff = new Date(Date.now() - 28 * 86400_000).toISOString();
+  for (const r of patternTrends) {
+    const bucket = r.started_at >= cutoff ? 'now' : 'prior';
+    try {
+      for (const p of JSON.parse(r.failure_patterns || '[]')) {
+        const key = `${r.caller || 'unknown'}|${p}`;
+        (patCounts[key] ||= { now: 0, prior: 0 })[bucket]++;
+      }
+    } catch {}
+  }
+  const watchlist = Object.entries(patCounts)
+    .map(([key, c]) => {
+      const [caller, pattern] = key.split('|');
+      const trend = c.now > c.prior ? 'RISING' : c.now === c.prior && c.now > 0 ? 'persistent' : c.now < c.prior && c.now > 0 ? 'improving' : 'CLEARED';
+      return { caller, pattern, ...c, trend };
+    })
+    .filter((p) => p.now >= 2 || (p.prior >= 2 && p.now === 0))
+    .sort((a, b) => b.now - a.now)
+    .slice(0, 15);
 
   const recent = db.prepare(`
     SELECT c.started_at, c.duration_sec, c.location_name, c.contact_name,
@@ -153,6 +226,12 @@ ${recent.map((r) => `<tr>
   <td>${esc(r.shareable_summary)}<details><summary>coaching priority + private report</summary><b>${esc(r.coaching_priority)}</b><pre>${esc(r.private_report)}</pre></details></td>
 </tr>`).join('')}
 </table>
+
+<h2>Coaching watch-list — repeating failure patterns (4 weeks vs the 4 before)</h2>
+<table><tr><th>Team member</th><th>Pattern</th><th>Last 4w</th><th>Prior 4w</th><th>Trend</th></tr>
+${watchlist.map((p) => `<tr><td>${esc(p.caller)}</td><td>${esc(p.pattern)}</td><td>${p.now}</td><td>${p.prior}</td><td class="${p.trend === 'RISING' ? 'fog' : p.trend === 'improving' || p.trend === 'CLEARED' ? 'booked' : ''}">${p.trend}</td></tr>`).join('') || '<tr><td colspan="5">Nothing repeating — clean slate</td></tr>'}
+</table>
+<div class="note">A pattern appears here when it occurred 2+ times in the window. RISING and persistent = coach on it; the evaluator also calls out streaks inside each private report.</div>
 
 <h2>Knowledgebase signals</h2>
 <div class="tiles">

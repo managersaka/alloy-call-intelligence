@@ -160,6 +160,8 @@ Describe the single most impactful thing the director failed to do or did poorly
 ### NARRATIVE ANALYSIS
 Write 3–5 paragraphs analyzing the session across all six categories. Be direct. Name what worked, what did not, and why. Do not soften feedback. The purpose of this analysis is to make the director better.
 
+If the metadata includes `recent_failure_patterns` (this director's repeated red flags from prior analyzed sessions) and THIS session repeats any of them, name the streak explicitly. If a previously repeated pattern is absent this time, acknowledge the improvement.
+
 ### COACHING PLAN: TOP 3 PRIORITIES
 For each priority, provide:
 - **The behavior to change or develop** — stated in one sentence.

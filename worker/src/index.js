@@ -263,6 +263,7 @@ async function processQueueOnce() {
         direction: call.direction,
         duration_sec: call.duration_sec,
         source: call.transcript_source, // ghl_native can never be an SPS (in-person only)
+        recent_failure_patterns: recentPatterns(call), // lets the report call out streaks
       }));
     } catch (e) {
       releaseClaim(db, `score:${call.id}`); // let the next run retry
@@ -286,6 +287,7 @@ async function processQueueOnce() {
     });
     console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
     await deliverReport(call, json, private_report);
+    await pushIndexRow(call, json);
   });
   // Phase 2: Q&A extraction for the agent knowledgebase (sales/member/accountability calls).
   await drain(() => qaPendingCalls(db, MIN_CALL_SEC), async (call) => {
@@ -300,6 +302,50 @@ async function processQueueOnce() {
       throw e;
     }
   });
+}
+
+// The caller's failure patterns from their last 5 scored calls — so this
+// report can say "third call in a row you skipped intake capture".
+function recentPatterns(call) {
+  if (!call.staff) return [];
+  try {
+    const rows = db.prepare(`
+      SELECT s.failure_patterns FROM call_scores s JOIN calls c ON c.id = s.call_id
+      WHERE s.caller = ? AND s.call_type != 'misrouted' AND (c.started_at < ? OR ? IS NULL)
+      ORDER BY c.started_at DESC LIMIT 5`).all(call.staff, call.started_at, call.started_at);
+    const counts = {};
+    for (const r of rows) for (const p of JSON.parse(r.failure_patterns || '[]')) counts[p] = (counts[p] || 0) + 1;
+    return Object.entries(counts).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 5)
+      .map(([p, n]) => `${p} (${n} of last ${rows.length} calls)`);
+  } catch {
+    return [];
+  }
+}
+
+export const DASHBOARD_BASE = process.env.DASHBOARD_BASE || 'https://alloy-members.duckdns.org/call-intel';
+
+// One row per analysis into the central Analysis Index sheet (best-effort).
+async function pushIndexRow(call, json) {
+  if (!bridgeEnabled() || json.call_type === 'misrouted') return;
+  try {
+    await bridge('appendIndexRows', {
+      rows: [{
+        date: (call.started_at || '').slice(0, 16).replace('T', ' '),
+        studio: call.location_name,
+        teamMember: call.staff || json.caller || '',
+        contact: call.contact_name || '',
+        type: json.call_type,
+        score: json.weighted_total,
+        clarity: json.clarity_outcome,
+        booked: Boolean(json.booked),
+        coachingPriority: json.coaching_priority || '',
+        summary: json.shareable_summary || '',
+        reportUrl: `${DASHBOARD_BASE}/report/${call.id}`,
+      }],
+    });
+  } catch (e) {
+    console.error(`index push failed for ${call.id}:`, e.message);
+  }
 }
 
 // ---------- Phase 3: private report to the caller, minutes after the call ----------

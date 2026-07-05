@@ -24,6 +24,7 @@ function doPost(e) {
     if (body.action === 'getDocs') return json_(getDocs_(body));
     if (body.action === 'moveFile') return json_(moveFile_(body));
     if (body.action === 'ensureSiblingFolder') return json_(ensureSiblingFolder_(body));
+    if (body.action === 'appendIndexRows') return json_(appendIndexRows_(body));
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -90,6 +91,14 @@ function writeRollup_(body) {
     (body.clarity || []).forEach(function (r) {
       rows.push([r.caller, r.n, r.fogRate, r.bookedRate, r.scorecard]);
     });
+    if (body.patterns && body.patterns.length) {
+      rows.push([]);
+      rows.push(['RECURRING FAILURE PATTERNS — last 4 weeks vs the 4 weeks before (rising or persistent = coach on it)']);
+      rows.push(['Team member', 'Pattern', 'Last 4w', 'Prior 4w', 'Trend']);
+      body.patterns.forEach(function (p) {
+        rows.push([p.caller, p.pattern, p.now, p.prior, p.trend]);
+      });
+    }
     rows.push([]);
     rows.push(['Notes: min-n=5 (below that the count shows, not a score). QC and SPS never blend. Baseline period: first 2 weeks are data-collection only.']);
     var width = 6;
@@ -111,6 +120,51 @@ function sendReport_(body) {
     name: 'Alloy Call Coach',
   });
   return { ok: true, sentTo: body.to };
+}
+
+// Central "Analysis Index" spreadsheet — one row per scored call/SPS, with a
+// link to the full report on the dashboard. Find-or-create next to the Plaud
+// folder (i.e. inside "Transcripts and Evals"); id cached in Script Properties.
+var INDEX_HEADER = ['Date', 'Studio', 'Team Member', 'Contact', 'Type', 'Score', 'Clarity', 'Booked', 'Coaching Priority', 'Summary', 'Full Report'];
+
+function indexSheet_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('INDEX_SHEET_ID');
+  if (id) {
+    try { return SpreadsheetApp.openById(id); } catch (e) { /* recreate below */ }
+  }
+  var plaud = DriveApp.getFolderById('1gek6OecFiM9fwNl0RfCLW_VTeu8z4ufQ');
+  var parent = plaud.getParents().next();
+  var existing = parent.getFilesByName('Alloy Call Intelligence — Analysis Index');
+  var ss;
+  if (existing.hasNext()) {
+    ss = SpreadsheetApp.openById(existing.next().getId());
+  } else {
+    ss = SpreadsheetApp.create('Alloy Call Intelligence — Analysis Index');
+    DriveApp.getFileById(ss.getId()).moveTo(parent);
+    var sh = ss.getSheets()[0];
+    sh.setName('Analyses');
+    sh.getRange(1, 1, 1, INDEX_HEADER.length).setValues([INDEX_HEADER]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  props.setProperty('INDEX_SHEET_ID', ss.getId());
+  return ss;
+}
+
+function appendIndexRows_(body) {
+  var rows = body.rows || [];
+  if (!rows.length) return { ok: true, appended: 0 };
+  var ss = indexSheet_();
+  var sh = ss.getSheetByName('Analyses') || ss.getSheets()[0];
+  var start = sh.getLastRow() + 1;
+  var grid = rows.map(function (r) {
+    return [r.date, r.studio, r.teamMember, r.contact, r.type, r.score, r.clarity, r.booked ? 'yes' : '', r.coachingPriority, r.summary,
+      r.reportUrl ? '=HYPERLINK("' + r.reportUrl + '","open report")' : ''];
+  });
+  sh.getRange(start, 1, grid.length, INDEX_HEADER.length).setValues(grid);
+  // newest first is nicer to scroll: sort by date desc (skip header)
+  if (sh.getLastRow() > 2) sh.getRange(2, 1, sh.getLastRow() - 1, INDEX_HEADER.length).sort({ column: 1, ascending: false });
+  return { ok: true, appended: grid.length, spreadsheetUrl: ss.getUrl() };
 }
 
 // Move a file into a folder (used to file non-studio Plaud recordings).

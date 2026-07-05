@@ -68,6 +68,33 @@ function clarityAgg(rows) {
 }
 const clarity4w = clarityAgg(db.prepare(CLARITY_SQL).all(fourWeeksAgo));
 
+// Failure-pattern trends: last 4 weeks vs the 4 weeks before, per caller.
+// Rising or persistent patterns are the coaching watch-list.
+const eightWeeksAgo = new Date(now.getTime() - 56 * 86400_000).toISOString();
+const PATTERN_SQL = `
+  SELECT s.caller, s.failure_patterns, c.started_at
+  FROM call_scores s JOIN calls c ON c.id = s.call_id
+  WHERE c.started_at >= ? AND s.call_type != 'misrouted'`;
+function patternTrends() {
+  const counts = {}; // caller|pattern -> {now, prior}
+  for (const r of db.prepare(PATTERN_SQL).all(eightWeeksAgo)) {
+    const bucket = r.started_at >= fourWeeksAgo ? 'now' : 'prior';
+    for (const p of JSON.parse(r.failure_patterns || '[]')) {
+      const key = `${r.caller || 'unknown'}|${p}`;
+      (counts[key] ||= { now: 0, prior: 0 })[bucket]++;
+    }
+  }
+  return Object.entries(counts)
+    .map(([key, c]) => {
+      const [caller, pattern] = key.split('|');
+      const trend = c.now > c.prior ? 'RISING' : c.now === c.prior && c.now > 0 ? 'persistent' : c.now < c.prior && c.now > 0 ? 'improving' : c.now === 0 && c.prior > 0 ? 'CLEARED' : '';
+      return { caller, pattern, now: c.now, prior: c.prior, trend };
+    })
+    .filter((p) => p.now >= 2 || (p.prior >= 2 && p.now === 0))
+    .sort((a, b) => b.now - a.now);
+}
+const patterns = patternTrends();
+
 const rolling = agg(window4w);
 const weekly = agg(window1w);
 
@@ -101,6 +128,7 @@ if (bridgeEnabled()) {
       generatedAt: now.toISOString(),
       rolling: rolling.map((r) => ({ ...r, scorecard: scorecardOf(r) })),
       clarity: clarity4w.map((r) => ({ ...r, scorecard: clarityScorecardOf(r) })),
+      patterns,
     });
     console.log('pushed to L10 sheets:', result.written.join(', '));
   } catch (e) {

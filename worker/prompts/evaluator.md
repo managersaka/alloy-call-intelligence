@@ -142,6 +142,8 @@ Detect and call out, with no sugarcoating, any of these patterns:
 
 Be brutally honest. This is the "punch in the chest" section.
 
+If the metadata includes `recent_failure_patterns` (this caller's repeated patterns from their last few scored calls) and THIS call repeats any of them, name the streak explicitly — "this is at least the third straight call where you skipped intake capture" lands harder than a fresh observation. If a previously repeated pattern did NOT occur this time, acknowledge the improvement in Step 5.
+
 ---
 
 ## STEP 5 — WHAT YOU DID WELL *(team-visible)*
