@@ -139,7 +139,10 @@ for (let i = 0; i < docs.length; i += 10) {
     const recordedAt = parseRecordedAt(doc.name, doc.created);
     const intro = await parseIntro(doc.text);
     const match = await calendarMatch(recordedAt, intro.member_name);
-    let location = match && !match.ambiguous ? match.location : null;
+    // A time-only calendar coincidence is location evidence ONLY for declared
+    // member sessions — a lecture recorded during someone's SPS slot is not that SPS.
+    const memberSession = Boolean(intro.declared_type && intro.declared_type !== 'other') || match?.how === 'calendar-name';
+    let location = match && !match.ambiguous && (match.how === 'calendar-name' || memberSession) ? match.location : null;
     let how = location ? match.how : null;
     if (!location) {
       location = staffScan(doc.text);
@@ -155,8 +158,8 @@ for (let i = 0; i < docs.length; i += 10) {
       kind: isSps ? 'sps' : null, // undeclared/other sessions fall to the classifier
       id: `drive_${doc.id}`,
       conversation_id: 'plaud',
-      contact_id: match?.contactId || null,
-      contact_name: intro.member_name || match?.contact || null,
+      contact_id: match?.how === 'calendar-name' ? match.contactId : null,
+      contact_name: intro.member_name || (match?.how === 'calendar-name' ? match.contact : null),
       location_id: loc?.locationId || 'unknown',
       location_name: location,
       direction: null,
