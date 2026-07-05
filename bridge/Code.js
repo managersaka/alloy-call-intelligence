@@ -22,6 +22,8 @@ function doPost(e) {
     if (body.action === 'report') return json_(sendReport_(body));
     if (body.action === 'listFolder') return json_(listFolder_(body));
     if (body.action === 'getDocs') return json_(getDocs_(body));
+    if (body.action === 'moveFile') return json_(moveFile_(body));
+    if (body.action === 'ensureSiblingFolder') return json_(ensureSiblingFolder_(body));
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -109,6 +111,24 @@ function sendReport_(body) {
     name: 'Alloy Call Coach',
   });
   return { ok: true, sentTo: body.to };
+}
+
+// Move a file into a folder (used to file non-studio Plaud recordings).
+function moveFile_(body) {
+  var file = DriveApp.getFileById(body.fileId);
+  file.moveTo(DriveApp.getFolderById(body.toFolderId));
+  return { ok: true, moved: file.getName() };
+}
+
+// Find-or-create a folder next to a known folder (same parent). Returns its id.
+function ensureSiblingFolder_(body) {
+  var sibling = DriveApp.getFolderById(body.siblingFolderId);
+  var parents = sibling.getParents();
+  if (!parents.hasNext()) return { ok: false, error: 'sibling has no parent' };
+  var parent = parents.next();
+  var existing = parent.getFoldersByName(body.name);
+  if (existing.hasNext()) return { ok: true, folderId: existing.next().getId(), created: false };
+  return { ok: true, folderId: parent.createFolder(body.name).getId(), created: true };
 }
 
 function json_(obj) {

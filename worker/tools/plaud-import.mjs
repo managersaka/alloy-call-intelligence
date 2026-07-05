@@ -124,34 +124,63 @@ if (probeIdx !== -1) {
 }
 
 // ---- sweep mode ----
+// Decision per doc:
+//   member session (declared SPS/accountability, or calendar NAME match) -> import for analysis
+//   unambiguous time-only SPS-calendar match, undeclared                 -> leave in place, flag review
+//   everything else (Prashant's meetings, interviews, lectures, tests)   -> MOVE to "Prashant Files"
+// plaud_files memoizes decisions so nightly sweeps never re-process a doc.
 if (!FOLDER) {
   console.log('PLAUD_FOLDER_ID not set — Plaud intake idle.');
   process.exit(0);
 }
 
 const db = openDb();
-const exists = (id) => db.prepare('SELECT 1 FROM calls WHERE id = ?').get(id);
+db.exec(`CREATE TABLE IF NOT EXISTS plaud_files (id TEXT PRIMARY KEY, name TEXT, decision TEXT, at TEXT DEFAULT (datetime('now')))`);
+const decided = (id) => db.prepare('SELECT 1 FROM plaud_files WHERE id = ?').get(id);
+const remember = (id, name, decision) =>
+  db.prepare('INSERT OR REPLACE INTO plaud_files (id, name, decision) VALUES (?, ?, ?)').run(id, name, decision);
+
+const { folderId: prashantFolder } = await bridge('ensureSiblingFolder', { siblingFolderId: FOLDER, name: 'Prashant Files' });
+
 const { items } = await bridge('listFolder', { folderId: FOLDER });
-const docs = items.filter((i) => i.mimeType === 'application/vnd.google-apps.document' && !exists(`drive_${i.id}`));
-console.log(`plaud folder: ${items.length} items, ${docs.length} new docs`);
+const docs = items.filter((i) => i.mimeType === 'application/vnd.google-apps.document' && !decided(i.id));
+console.log(`plaud folder: ${items.length} items, ${docs.length} undecided docs`);
 
 for (let i = 0; i < docs.length; i += 10) {
   const { docs: batch } = await bridge('getDocs', { ids: docs.slice(i, i + 10).map((d) => d.id) });
   for (const doc of batch) {
-    if (doc.error || !doc.text || doc.text.trim().length < 500) {
-      console.log(`  skip ${doc.name || doc.id}: ${doc.error || 'too short'}`);
+    if (doc.error) {
+      console.log(`  skip ${doc.name || doc.id}: ${doc.error}`);
+      continue; // transient — retry next sweep
+    }
+    if (!doc.text || doc.text.trim().length < 500) {
+      await bridge('moveFile', { fileId: doc.id, toFolderId: prashantFolder });
+      remember(doc.id, doc.name, 'moved-short');
+      console.log(`  filed to Prashant Files (too short): ${doc.name}`);
       continue;
     }
     const recordedAt = parseRecordedAt(doc.name, doc.created);
     const intro = await parseIntro(doc.text);
     const match = await calendarMatch(recordedAt, intro.member_name);
-    // A time-only calendar coincidence is location evidence ONLY for declared
-    // member sessions — a lecture recorded during someone's SPS slot is not that SPS.
     const memberSession = Boolean(intro.declared_type && intro.declared_type !== 'other') || match?.how === 'calendar-name';
+
+    if (!memberSession) {
+      if (match && !match.ambiguous && match.how === 'calendar-time') {
+        // Could be an SPS where the director forgot the declaration — do not move, do not import.
+        remember(doc.id, doc.name, 'review');
+        console.log(`  REVIEW (undeclared, but ${match.location} had an SPS booked nearby): ${doc.name}`);
+      } else {
+        await bridge('moveFile', { fileId: doc.id, toFolderId: prashantFolder });
+        remember(doc.id, doc.name, 'moved');
+        console.log(`  filed to Prashant Files: ${doc.name}`);
+      }
+      continue;
+    }
+
     // Tier 0: the director stated the studio out loud — trust it above everything.
     let location = ['Schaumburg', 'Lincolnshire'].includes(intro.location) ? intro.location : null;
     let how = location ? 'spoken' : null;
-    if (!location && match && !match.ambiguous && (match.how === 'calendar-name' || memberSession)) {
+    if (!location && match && !match.ambiguous) {
       location = match.location;
       how = match.how;
     }
@@ -163,10 +192,10 @@ for (let i = 0; i < docs.length; i += 10) {
       location = 'Unknown';
       how = 'UNRESOLVED — review';
     }
-    const isSps = intro.declared_type === 'sps' || (match?.how === 'calendar-name') || /\bsps\b/i.test(doc.name);
+    const isSps = intro.declared_type === 'sps' || match?.how === 'calendar-name' || /\bsps\b/i.test(doc.name);
     const loc = LOCATIONS.find((l) => l.name === location);
     upsertCall(db, {
-      kind: isSps ? 'sps' : null, // undeclared/other sessions fall to the classifier
+      kind: isSps ? 'sps' : null, // declared accountability etc. fall to the classifier
       id: `drive_${doc.id}`,
       conversation_id: 'plaud',
       contact_id: match?.how === 'calendar-name' ? match.contactId : null,
@@ -181,6 +210,7 @@ for (let i = 0; i < docs.length; i += 10) {
       transcript: doc.text.trim(),
       transcript_source: 'plaud',
     });
+    remember(doc.id, doc.name, 'imported');
     console.log(`  imported ${doc.name} → ${location} (${how}) | type: ${isSps ? 'sps' : intro.declared_type || '?'} | member: ${intro.member_name || match?.contact || '?'}`);
   }
 }
