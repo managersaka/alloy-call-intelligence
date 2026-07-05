@@ -33,15 +33,21 @@ const norm = (s) => (s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
 // Tier 1: the spoken declaration. Cheap regexes first; Haiku for messy speech.
 async function parseIntro(text) {
   const head = text.slice(0, 2500);
+  const opening = head.slice(0, 800);
+  const spokenLoc =
+    /schaumburg/i.test(opening) && !/lincolnshire/i.test(opening) ? 'Schaumburg'
+    : /lincolnshire/i.test(opening) && !/schaumburg/i.test(opening) ? 'Lincolnshire'
+    : null;
   let m = head.match(/\b(?:sps|starting\s+point)\b[^.\n]{0,80}?(?:with|for)\s+([A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?)/i);
-  if (m) return { declared_type: 'sps', member_name: m[1] };
+  if (m) return { declared_type: 'sps', member_name: m[1], location: spokenLoc };
   m = head.match(/\baccountability\b[^.\n]{0,80}?(?:with|for)\s+([A-Z][\w'-]+(?:\s+[A-Z][\w'-]+)?)/i);
-  if (m) return { declared_type: 'accountability', member_name: m[1] };
+  if (m) return { declared_type: 'accountability', member_name: m[1], location: spokenLoc };
   try {
-    return await extractPlaudIntro(head);
+    const r = await extractPlaudIntro(head);
+    return { ...r, location: r.location || spokenLoc };
   } catch (e) {
     console.warn(`  intro extraction failed: ${e.message.slice(0, 100)}`);
-    return { declared_type: null, member_name: null };
+    return { declared_type: null, member_name: null, location: spokenLoc };
   }
 }
 
@@ -142,8 +148,13 @@ for (let i = 0; i < docs.length; i += 10) {
     // A time-only calendar coincidence is location evidence ONLY for declared
     // member sessions — a lecture recorded during someone's SPS slot is not that SPS.
     const memberSession = Boolean(intro.declared_type && intro.declared_type !== 'other') || match?.how === 'calendar-name';
-    let location = match && !match.ambiguous && (match.how === 'calendar-name' || memberSession) ? match.location : null;
-    let how = location ? match.how : null;
+    // Tier 0: the director stated the studio out loud — trust it above everything.
+    let location = ['Schaumburg', 'Lincolnshire'].includes(intro.location) ? intro.location : null;
+    let how = location ? 'spoken' : null;
+    if (!location && match && !match.ambiguous && (match.how === 'calendar-name' || memberSession)) {
+      location = match.location;
+      how = match.how;
+    }
     if (!location) {
       location = staffScan(doc.text);
       how = location ? 'staff-scan' : null;

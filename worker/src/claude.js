@@ -128,9 +128,9 @@ export async function extractQa(transcript) {
 export async function extractPlaudIntro(openingText) {
   const text = await ask({
     model: CLASSIFIER_MODEL,
-    system: `You read the OPENING of an in-studio recording transcript from Alloy Personal Training. The staff member is supposed to declare what the session is and who it is with (e.g. "this is an SPS with Jane Doe", "accountability session with Bob"). Respond with ONLY JSON, no fences:
-{"declared_type": "sps | accountability | other | null", "member_name": "First Last or null", "director_name": "name if the staff member identifies themselves, else null"}
-SPS = Starting Point Session (also "starting point", "assessment", "consult"). If nothing is declared, infer nothing — return nulls.`,
+    system: `You read the OPENING of an in-studio recording transcript from Alloy Personal Training. The staff member is supposed to declare what the session is, who it is with, and ideally which studio (e.g. "this is an SPS with Jane Doe at Schaumburg"). Respond with ONLY JSON, no fences:
+{"declared_type": "sps | accountability | other | null", "member_name": "First Last or null", "director_name": "name if the staff member identifies themselves, else null", "location": "Schaumburg | Lincolnshire | null"}
+SPS = Starting Point Session (also "starting point", "assessment", "consult"). Only report a location that is actually stated or unambiguous from the opening. If nothing is declared, infer nothing — return nulls.`,
     user: `Opening of transcript:\n\n${openingText.slice(0, 2500)}`,
     max_tokens: 200,
   });
