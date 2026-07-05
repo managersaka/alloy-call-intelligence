@@ -259,6 +259,7 @@ async function processQueueOnce() {
         location: call.location_name,
         direction: call.direction,
         duration_sec: call.duration_sec,
+        source: call.transcript_source, // ghl_native can never be an SPS (in-person only)
       }));
     } catch (e) {
       releaseClaim(db, `score:${call.id}`); // let the next run retry
