@@ -88,6 +88,7 @@ for (let i = 0; i < fresh.length; i += 10) {
     }
     const meta = parseName(doc.name, doc.created);
     upsertCall(db, {
+      kind: /\bSPS\b/i.test(doc.name) ? 'sps' : null, // routes to the SPS analyzer rubric
       id: `drive_${doc.id}`,
       conversation_id: 'drive_backfill',
       contact_id: null,

@@ -15,6 +15,7 @@ export function openDb() {
   // Migrations for DBs created before the column existed (CREATE IF NOT EXISTS won't alter).
   try { db.exec('ALTER TABLE calls ADD COLUMN clarity_outcome TEXT'); } catch { /* already there */ }
   try { db.exec('ALTER TABLE calls ADD COLUMN qa_done INTEGER DEFAULT 0'); } catch { /* already there */ }
+  try { db.exec('ALTER TABLE calls ADD COLUMN kind TEXT'); } catch { /* already there */ } // 'sps' = in-person SPS transcript (Otter/Plaud import)
   // Cross-process work claims: the webhook server and cron polls are separate
   // processes sharing this DB; a claim ensures a call is classified/scored
   // (and its report emailed) exactly once.
@@ -38,14 +39,15 @@ export function cleanStaleClaims(db) {
 export function upsertCall(db, call) {
   db.prepare(`
     INSERT INTO calls (id, conversation_id, contact_id, contact_name, location_id, location_name,
-                       direction, staff, started_at, duration_sec, recording_url, transcript, transcript_source)
+                       direction, staff, started_at, duration_sec, recording_url, transcript, transcript_source, kind)
     VALUES (:id, :conversation_id, :contact_id, :contact_name, :location_id, :location_name,
-            :direction, :staff, :started_at, :duration_sec, :recording_url, :transcript, :transcript_source)
+            :direction, :staff, :started_at, :duration_sec, :recording_url, :transcript, :transcript_source, :kind)
     ON CONFLICT(id) DO UPDATE SET
       transcript = COALESCE(excluded.transcript, calls.transcript),
       transcript_source = COALESCE(excluded.transcript_source, calls.transcript_source),
-      duration_sec = COALESCE(excluded.duration_sec, calls.duration_sec)
-  `).run(call);
+      duration_sec = COALESCE(excluded.duration_sec, calls.duration_sec),
+      kind = COALESCE(excluded.kind, calls.kind)
+  `).run({ kind: null, ...call });
 }
 
 export function setClassification(db, id, { classification, confidence, summary, outcome, next_action, clarity_outcome }) {

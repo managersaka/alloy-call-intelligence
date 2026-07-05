@@ -8,7 +8,7 @@ import 'dotenv/config';
 import express from 'express';
 import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
-import { classifyCall, evaluateSalesCall, extractQa } from './claude.js';
+import { classifyCall, evaluateSalesCall, evaluateSps, extractQa } from './claude.js';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
 
@@ -254,7 +254,10 @@ async function processQueueOnce() {
     if (!claim(db, `score:${call.id}`)) return 'skip'; // another process has it
     let json, private_report;
     try {
-      ({ json, private_report } = await evaluateSalesCall(call.transcript, {
+      // kind='sps' (in-person Otter/Plaud transcript) → Prashant's SPS rubric;
+      // everything else → the phone qualification-call rubric.
+      const evaluate = call.kind === 'sps' ? evaluateSps : evaluateSalesCall;
+      ({ json, private_report } = await evaluate(call.transcript, {
         caller: call.staff,
         location: call.location_name,
         direction: call.direction,
@@ -321,7 +324,7 @@ async function deliverReport(call, json, private_report) {
     ].join('\n');
     await bridge('report', {
       to,
-      subject: `Call review: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100, ${json.clarity_outcome}`,
+      subject: `${json.call_type === 'sps' ? 'SPS review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100, ${json.clarity_outcome}`,
       text: header + private_report,
     });
     console.log(`report emailed to ${to} for ${call.id}`);
