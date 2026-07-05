@@ -57,6 +57,12 @@ export async function getRecording(token, locationId, messageId) {
   return res.arrayBuffer();
 }
 
+/** Calendar events in a time window (epoch ms) — used to match Plaud recordings to scheduled SPS. */
+export async function getCalendarEvents(token, locationId, calendarId, startMs, endMs) {
+  const q = new URLSearchParams({ locationId, calendarId, startTime: String(startMs), endTime: String(endMs) });
+  return ghlFetch(`/calendars/events?${q}`, token);
+}
+
 export function isCallMessage(msg) {
   return msg?.messageType === 'TYPE_CALL' || msg?.type === 'TYPE_CALL';
 }
