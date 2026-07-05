@@ -29,23 +29,23 @@ function doPost(e) {
 }
 
 // ---- Drive read-only export (for the transcript backfill) ----
-
-function driveGet_(url) {
-  var res = UrlFetchApp.fetch(url, {
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true,
-  });
-  if (res.getResponseCode() !== 200) throw new Error('drive ' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 200));
-  return res;
-}
+// Native DriveApp/DocumentApp — the Drive REST API 403s from default-GCP scripts.
 
 function listFolder_(body) {
   if (!body.folderId) return { ok: false, error: 'no folderId' };
-  var q = encodeURIComponent("'" + body.folderId + "' in parents and trashed = false");
-  var url = 'https://www.googleapis.com/drive/v3/files?q=' + q +
-    '&fields=files(id,name,mimeType,createdTime)&pageSize=200';
-  var data = JSON.parse(driveGet_(url).getContentText());
-  return { ok: true, items: data.files || [] };
+  var folder = DriveApp.getFolderById(body.folderId);
+  var items = [];
+  var folders = folder.getFolders();
+  while (folders.hasNext()) {
+    var f = folders.next();
+    items.push({ id: f.getId(), name: f.getName(), mimeType: 'application/vnd.google-apps.folder' });
+  }
+  var files = folder.getFiles();
+  while (files.hasNext()) {
+    var file = files.next();
+    items.push({ id: file.getId(), name: file.getName(), mimeType: file.getMimeType(), createdTime: file.getDateCreated().toISOString() });
+  }
+  return { ok: true, items: items };
 }
 
 function getDocs_(body) {
@@ -54,13 +54,13 @@ function getDocs_(body) {
   var docs = [];
   for (var i = 0; i < ids.length; i++) {
     try {
-      var meta = JSON.parse(driveGet_('https://www.googleapis.com/drive/v3/files/' + ids[i] + '?fields=id,name,mimeType,createdTime').getContentText());
-      if (meta.mimeType !== 'application/vnd.google-apps.document') {
-        docs.push({ id: ids[i], name: meta.name, error: 'not a google doc: ' + meta.mimeType });
+      var file = DriveApp.getFileById(ids[i]);
+      if (file.getMimeType() !== 'application/vnd.google-apps.document') {
+        docs.push({ id: ids[i], name: file.getName(), error: 'not a google doc: ' + file.getMimeType() });
         continue;
       }
-      var text = driveGet_('https://www.googleapis.com/drive/v3/files/' + ids[i] + '/export?mimeType=text/plain').getContentText();
-      docs.push({ id: meta.id, name: meta.name, created: meta.createdTime, text: text });
+      var text = DocumentApp.openById(ids[i]).getBody().getText();
+      docs.push({ id: ids[i], name: file.getName(), created: file.getDateCreated().toISOString(), text: text });
     } catch (err) {
       docs.push({ id: ids[i], error: String(err) });
     }
