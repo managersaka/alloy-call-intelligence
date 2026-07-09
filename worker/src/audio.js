@@ -47,6 +47,11 @@ export async function deliveryReadFromFile(path, meta = {}) {
     let json;
     try { json = JSON.parse(text); } catch { return { summary: text.slice(0, 400) }; }
     return json;
+  } catch (e) {
+    // Tier B is an enhancement, never a gate — a Gemini rate-limit/quota (429) or
+    // any audio failure must not abort scoring. Degrade to Tier A prosody only.
+    console.warn(`tier-B delivery read skipped: ${String(e.message).slice(0, 160)}`);
+    return null;
   } finally {
     try { rmSync(mp3); } catch {}
   }
