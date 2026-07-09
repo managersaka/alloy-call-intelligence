@@ -93,6 +93,17 @@ export function insertQaRows(db, callId, rows) {
   db.prepare('UPDATE calls SET qa_done = 1 WHERE id = ?').run(callId);
 }
 
+// Accountability sessions (phone or in-person) awaiting the acct rubric.
+export function unscoredAccountabilityCalls(db, minEvalSec = 0, limit = 10) {
+  return db.prepare(`
+    SELECT c.* FROM calls c
+    LEFT JOIN call_scores s ON s.call_id = c.id
+    WHERE c.classification = 'accountability' AND s.id IS NULL AND c.transcript IS NOT NULL
+      AND (c.duration_sec IS NULL OR c.duration_sec >= ?)
+    LIMIT ?
+  `).all(minEvalSec, limit);
+}
+
 export function unscoredSalesCalls(db, minEvalSec = 0, limit = 10) {
   // Full-rubric evaluation only for real conversations (>= minEvalSec); shorter
   // sales calls keep their classifier clarity_outcome but are never rubric-scored.

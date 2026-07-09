@@ -25,6 +25,7 @@ const CLASSIFIER_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'cl
 const EVALUATOR_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'evaluator.md'), 'utf8');
 const QA_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'qa-extractor.md'), 'utf8');
 const SPS_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'sps-analyzer.md'), 'utf8');
+const ACCT_PROMPT = readFileSync(path.join(__dirname, '..', 'prompts', 'accountability-analyzer.md'), 'utf8');
 
 async function askApi({ model, system, user, max_tokens }) {
   const res = await fetch(API, {
@@ -135,6 +136,19 @@ SPS = Starting Point Session (also "starting point", "assessment", "consult"). O
     max_tokens: 200,
   });
   return extractJsonBlock(text).json;
+}
+
+// Accountability sessions (phone check-ins + in-person Deep Dives) — acct-1.0.
+export async function evaluateAccountability(transcript, meta) {
+  const text = await ask({
+    model: EVALUATOR_MODEL,
+    system: ACCT_PROMPT,
+    user: `Metadata: ${JSON.stringify(meta)}\n\nTranscript:\n\n${transcript.slice(0, 120000)}`,
+    max_tokens: 6000,
+  });
+  const { json, end } = extractJsonBlock(text);
+  const private_report = text.slice(end).replace(/^\s*```\s*/, '').trim();
+  return { json, private_report };
 }
 
 // In-person SPS recordings (Otter/Plaud) — Prashant's dedicated rubric (sps-1.0).

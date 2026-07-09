@@ -6,9 +6,9 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
+import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
-import { classifyCall, evaluateSalesCall, evaluateSps, extractQa } from './claude.js';
+import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa } from './claude.js';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
 
@@ -250,14 +250,11 @@ async function processQueueOnce() {
       throw e;
     }
   });
-  await drain(() => unscoredSalesCalls(db, MIN_EVAL_SEC), async (call) => {
+  const scoreWith = (pickEvaluator) => async (call) => {
     if (!claim(db, `score:${call.id}`)) return 'skip'; // another process has it
     let json, private_report;
     try {
-      // kind='sps' (in-person Otter/Plaud transcript) → Prashant's SPS rubric;
-      // everything else → the phone qualification-call rubric.
-      const evaluate = call.kind === 'sps' ? evaluateSps : evaluateSalesCall;
-      ({ json, private_report } = await evaluate(call.transcript, {
+      ({ json, private_report } = await pickEvaluator(call)(call.transcript, {
         caller: call.staff,
         location: call.location_name,
         direction: call.direction,
@@ -277,7 +274,12 @@ async function processQueueOnce() {
       location_name: call.location_name,
       sub_scores: JSON.stringify(json.sub_scores || {}),
       weighted_total: json.weighted_total ?? null,
-      pass_fail: JSON.stringify(json.pass_fail || {}),
+      // session subtype + growth-ask (accountability) ride along in the pass_fail blob
+      pass_fail: JSON.stringify({
+        ...(json.pass_fail || {}),
+        ...(json.growth_ask ? { growth_ask: json.growth_ask } : {}),
+        ...(json.session_type ? { session_type: json.session_type } : {}),
+      }),
       clarity_outcome: json.clarity_outcome || null,
       booked: json.booked ? 1 : 0,
       failure_patterns: JSON.stringify(json.failure_patterns || []),
@@ -288,7 +290,14 @@ async function processQueueOnce() {
     console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
     await deliverReport(call, json, private_report);
     await pushIndexRow(call, json);
-  });
+  };
+  // Sales: kind='sps' (in-person Otter/Plaud transcript) → Prashant's SPS rubric;
+  // everything else → the phone qualification-call rubric.
+  await drain(() => unscoredSalesCalls(db, MIN_EVAL_SEC),
+    scoreWith((call) => (call.kind === 'sps' ? evaluateSps : evaluateSalesCall)));
+  // Accountability sessions (phone check-ins + in-person Deep Dives) → acct rubric.
+  await drain(() => unscoredAccountabilityCalls(db, MIN_EVAL_SEC),
+    scoreWith(() => evaluateAccountability));
   // Phase 2: Q&A extraction for the agent knowledgebase (sales/member/accountability calls).
   await drain(() => qaPendingCalls(db, MIN_CALL_SEC), async (call) => {
     if (!claim(db, `qa:${call.id}`)) return 'skip';
@@ -373,7 +382,7 @@ async function deliverReport(call, json, private_report) {
     ].join('\n');
     await bridge('report', {
       to,
-      subject: `${json.call_type === 'sps' ? 'SPS review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100, ${json.clarity_outcome}`,
+      subject: `${json.call_type === 'sps' ? 'SPS review' : json.call_type === 'accountability' ? 'Accountability review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100${json.clarity_outcome ? `, ${json.clarity_outcome}` : ''}`,
       text: header + private_report,
     });
     console.log(`report emailed to ${to} for ${call.id}`);
