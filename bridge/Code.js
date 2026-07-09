@@ -25,6 +25,7 @@ function doPost(e) {
     if (body.action === 'moveFile') return json_(moveFile_(body));
     if (body.action === 'ensureSiblingFolder') return json_(ensureSiblingFolder_(body));
     if (body.action === 'appendIndexRows') return json_(appendIndexRows_(body));
+    if (body.action === 'setupPlaudLinks') return json_(setupPlaudLinks());
     return json_({ ok: false, error: 'unknown action' });
   } catch (err) {
     return json_({ ok: false, error: String(err) });
@@ -191,26 +192,31 @@ var PLAUD_WEBHOOK_URL = 'https://alloy-members.duckdns.org/webhook/plaud';
 
 // Installable onEdit trigger. Fires on any edit; acts only on the "Plaud Links"
 // tab, column A, when a Plaud share link is pasted → POSTs it to the droplet.
+// Columns: A = Member name (optional), B = Plaud link (trigger), C = Status.
+// Filling left-to-right puts the member name in before the link is pasted, so
+// there's no race — the link paste fires this and reads the name already in A.
 function onPlaudLinkEdit(e) {
   try {
     var sh = e.range.getSheet();
     if (sh.getName() !== 'Plaud Links') return;
-    if (e.range.getColumn() !== 1 || e.range.getRow() < 2) return;
+    if (e.range.getColumn() !== 2 || e.range.getRow() < 2) return; // trigger on the LINK column (B)
+    var row = e.range.getRow();
     var link = String(e.value || e.range.getValue() || '').trim();
-    var status = sh.getRange(e.range.getRow(), 2);
+    var member = String(sh.getRange(row, 1).getValue() || '').trim(); // member name (col A), optional
+    var status = sh.getRange(row, 3); // status in col C
     if (!/web\.plaud\.ai\/s\/pub_/.test(link)) { if (link) status.setValue('not a Plaud share link'); return; }
     var sec = PropertiesService.getScriptProperties().getProperty('WEBHOOK_SECRET');
     if (!sec) { status.setValue('⚠️ WEBHOOK_SECRET not set'); return; }
     status.setValue('⏳ sending…');
     var resp = UrlFetchApp.fetch(PLAUD_WEBHOOK_URL + '?secret=' + encodeURIComponent(sec), {
       method: 'post', contentType: 'application/json',
-      payload: JSON.stringify({ link: link }), muteHttpExceptions: true,
+      payload: JSON.stringify({ link: link, member: member }), muteHttpExceptions: true,
     });
     status.setValue(resp.getResponseCode() === 200
       ? '✅ processing — report in a few minutes'
       : '⚠️ error ' + resp.getResponseCode());
   } catch (err) {
-    try { e.range.getSheet().getRange(e.range.getRow(), 2).setValue('⚠️ ' + err); } catch (e2) {}
+    try { e.range.getSheet().getRange(e.range.getRow(), 3).setValue('⚠️ ' + err); } catch (e2) {}
   }
 }
 
@@ -218,17 +224,21 @@ function onPlaudLinkEdit(e) {
 // the onEdit trigger. Run once from the editor.
 function setupPlaudLinks() {
   var ss = indexSheet_();
-  var sh = ss.getSheetByName('Plaud Links');
-  if (!sh) {
-    sh = ss.insertSheet('Plaud Links', 0);
-    sh.getRange(1, 1, 1, 3).setValues([['Paste Plaud share link (with audio) — one per row', 'Status', 'Notes']]).setFontWeight('bold');
-    sh.setColumnWidth(1, 540);
-    sh.setColumnWidth(2, 300);
-    sh.setFrozenRows(1);
-  }
+  var sh = ss.getSheetByName('Plaud Links') || ss.insertSheet('Plaud Links', 0);
+  // (Re)apply the 3-column layout every run so it's safe to call idempotently.
+  sh.getRange(1, 1, 1, 3).setValues([[
+    'Member name (optional — leave blank if the coach states it in the recording)',
+    'Paste Plaud share link (with audio) — pasting here starts processing',
+    'Status',
+  ]]).setFontWeight('bold');
+  sh.setColumnWidth(1, 260);
+  sh.setColumnWidth(2, 500);
+  sh.setColumnWidth(3, 280);
+  sh.setFrozenRows(1);
   var have = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'onPlaudLinkEdit'; });
   if (!have) ScriptApp.newTrigger('onPlaudLinkEdit').forSpreadsheet(ss).onEdit().create();
-  Logger.log('Plaud Links ready: ' + ss.getUrl() + ' (tab "Plaud Links"); trigger installed: ' + !have);
+  Logger.log('Plaud Links ready: ' + ss.getUrl() + ' (Member | Link | Status); trigger installed: ' + !have);
+  return { ok: true, url: ss.getUrl(), triggerAlreadyInstalled: have };
 }
 
 function json_(obj) {

@@ -123,14 +123,15 @@ app.post('/webhook/plaud', async (req, res) => {
   const link = (req.body && (req.body.link || req.body.url)) || req.query.link;
   if (!link) return res.status(400).json({ ok: false, error: 'no link' });
   res.json({ ok: true }); // ack fast; process async
+  const memberOverride = (req.body && req.body.member) || req.query.member || null; // typed in the sheet
   try {
-    await processPlaudLink(link);
+    await processPlaudLink(link, memberOverride);
   } catch (e) {
     console.error('plaud processing error:', e.message);
   }
 });
 
-async function processPlaudLink(link) {
+async function processPlaudLink(link, memberOverride = null) {
   const s = await fetchPlaudShare(link);
   if (!claim(db, `score:${s.id}`)) return console.log(`plaud ${s.id} already claimed`);
   try {
@@ -139,7 +140,9 @@ async function processPlaudLink(link) {
     let intro = {};
     try { intro = (await extractPlaudIntro(s.transcript)) || {}; }
     catch (e) { console.warn(`plaud intro extract failed: ${String(e.message).slice(0, 80)}`); }
-    const member = intro.member_name || s.member || null;
+    // Member name priority: what's typed in the sheet > the coach's spoken intro
+    // > Plaud's auto-title. The typed override guarantees a name on every report.
+    const member = (memberOverride && String(memberOverride).trim()) || intro.member_name || s.member || null;
     const studio = intro.location === 'Schaumburg' || intro.location === 'Lincolnshire' ? intro.location : s.studio;
     const call = {
       id: s.id,
