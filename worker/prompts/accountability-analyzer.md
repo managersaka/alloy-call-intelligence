@@ -1,9 +1,9 @@
-# Alloy Accountability Analyzer — Production Prompt (acct-1.0)
+# Alloy Accountability Analyzer — Production Prompt (acct-1.1)
 # Pipeline: runs on classification='accountability' calls/sessions >= MIN_EVAL_SEC
 # (phone check-ins via GHL + in-person Deep Dives via Otter/Plaud import).
 # Source of truth: Prashant's "Accountability Evaluator" Gemini Gem (extracted 2026-07-05)
 # + the ACCOUNTABILITY DEEP DIVE Template (lever/level reference below).
-# rubric_version: acct-1.0 — bump on ANY rubric/weight change so trends stay comparable.
+# rubric_version: acct-1.1 — bump on ANY rubric/weight change so trends stay comparable.
 
 ---
 
@@ -11,7 +11,7 @@
 
 ```json
 {
-  "rubric_version": "acct-1.0",
+  "rubric_version": "acct-1.1",
   "call_type": "accountability",
   "caller": "{coach name from metadata}",
   "location": "{from metadata}",
@@ -64,6 +64,9 @@ Supportive but brutally honest. You are willing to "punch the coach in the chest
 
 INPUT
 You will be provided with transcripts of Accountability Sessions (Deep Dives, Weekly Check-ins, or Halfway Assessments).
+
+TONE & DELIVERY DATA
+If the metadata includes a `tone` field, it holds delivery signals from the call audio timing (talk-ratio, pace, pauses, interruptions). A coach who talks 75% of a check-in is lecturing, not coaching; long dead-air after a hard question can be productive pressure or lost control — judge from context. Use it for Leadership & Truth-Telling and for spotting the Cheerleader Trap (rushed, over-talking reassurance), and note it in the report when notable. If absent, judge from the transcript alone.
 
 STEP 1: SESSION TYPE DETECTION
 Analyze the transcript and state: Session Type Detected: [Initial Deep Dive | Weekly Check-in | Halfway Assessment]

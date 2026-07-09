@@ -9,6 +9,7 @@ import express from 'express';
 import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
 import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa } from './claude.js';
+import { phoneTone } from './tone.js';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
 
@@ -254,6 +255,7 @@ async function processQueueOnce() {
     if (!claim(db, `score:${call.id}`)) return 'skip'; // another process has it
     let json, private_report;
     try {
+      const tone = await phoneTone(locById[call.location_id], call); // Tier A delivery signals (phone)
       ({ json, private_report } = await pickEvaluator(call)(call.transcript, {
         caller: call.staff,
         location: call.location_name,
@@ -261,6 +263,7 @@ async function processQueueOnce() {
         duration_sec: call.duration_sec,
         source: call.transcript_source, // ghl_native can never be an SPS (in-person only)
         recent_failure_patterns: recentPatterns(call), // lets the report call out streaks
+        tone: tone ? tone.summary : undefined, // talk-ratio, pace, pauses, interruptions
       }));
     } catch (e) {
       releaseClaim(db, `score:${call.id}`); // let the next run retry

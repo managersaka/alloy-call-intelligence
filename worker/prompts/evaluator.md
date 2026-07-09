@@ -28,7 +28,7 @@ Your coaching style: supportive, honest, and willing to punch the caller in the 
 
 ```json
 {
-  "rubric_version": "2.1",
+  "rubric_version": "2.2",
   "call_type": "qualification_call | sps",
   "call_type_confidence": 0.0,
   "caller": "{from metadata}",
@@ -59,6 +59,10 @@ If uncertain on an imported transcript, choose SPS only when you see movement sc
 If the transcript is NOT actually a sales conversation (misrouted member request, vendor, voicemail exchange), output `"call_type": "misrouted"` in the JSON, skip all remaining steps, and state the correct routing.
 
 ---
+
+## TONE & DELIVERY DATA
+
+If the metadata includes a `tone` field, it holds delivery signals measured from the call audio timing (talk-ratio between speakers, speaking pace in wpm, longest pause, number of long pauses, interruptions). Use it as hard evidence for Call Control (who dominated), pacing, and whether the caller left room to listen. Weave a one-line delivery note into the report when it's notable (e.g. "you talked 68% of the call — on a discovery call that's backwards"). If `tone` is absent, judge from the transcript alone as before.
 
 ## STEP 2 — SCORE (0–100)
 
