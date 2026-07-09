@@ -42,6 +42,9 @@ const REPORT_MAX_AGE_DAYS = Number(process.env.REPORT_MAX_AGE_DAYS || 3);
 // never drops the report. Phone calls keep per-staff routing (see deliverReport).
 const STUDIO_HEAD = { Lincolnshire: 'Colin Yording', Schaumburg: 'Christian Simanonis' };
 const SPS_OVERSIGHT = ['Prashant Singri', 'Nimisha Singri'];
+// Studio head is held back until the reports are validated — owners get them first.
+// Set SPS_INCLUDE_STUDIO_HEAD=true (no code change) to also send To: the studio head.
+const SPS_INCLUDE_STUDIO_HEAD = process.env.SPS_INCLUDE_STUDIO_HEAD === 'true';
 
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
 const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
@@ -446,7 +449,7 @@ async function deliverReport(call, json, private_report) {
   const isSps = json.call_type === 'sps' || call.kind === 'sps';
   let recipients;
   if (isSps) {
-    const head = STUDIO_HEAD[call.location_name]; // Colin / Christian, by detected studio (may be undefined)
+    const head = SPS_INCLUDE_STUDIO_HEAD ? STUDIO_HEAD[call.location_name] : null; // held back until validated
     recipients = [head && STAFF_EMAILS[head], ...SPS_OVERSIGHT.map((n) => STAFF_EMAILS[n])];
   } else {
     recipients = [STAFF_EMAILS[call.staff]]; // phone calls: the person who took the call
