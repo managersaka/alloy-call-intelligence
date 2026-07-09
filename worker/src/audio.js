@@ -28,8 +28,9 @@ export async function deliveryReadFromFile(path, meta = {}) {
   if (!audioEnabled()) return null;
   const mp3 = `${path}.mp3`;
   try {
-    // shrink to a small mono mp3 — cheap to send, plenty for prosody/emotion
-    execSync(`ffmpeg -y -i "${path}" -ac 1 -ar 16000 -b:a 32k "${mp3}" >/dev/null 2>&1`);
+    // shrink to a small mono mp3 — cheap to send, plenty for prosody/emotion.
+    // 24kbps mono keeps even a ~90-min in-person SPS under the inline ceiling.
+    execSync(`ffmpeg -y -i "${path}" -ac 1 -ar 16000 -b:a 24k "${mp3}" >/dev/null 2>&1`);
     const bytes = readFileSync(mp3);
     if (bytes.byteLength > MAX_MP3_BYTES) return { summary: `(audio ${Math.round(bytes.byteLength / 1e6)}MB too large for inline delivery read — skipped)` };
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`, {
