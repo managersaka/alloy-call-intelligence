@@ -115,11 +115,12 @@ function sendReport_(body) {
   if (!body.to) return { ok: false, error: 'no recipient' };
   MailApp.sendEmail({
     to: body.to,
+    cc: body.cc || '',
     subject: body.subject || 'Your call review',
     htmlBody: body.html || ('<pre style="font-family:inherit;white-space:pre-wrap">' + (body.text || '') + '</pre>'),
     name: 'Alloy Call Coach',
   });
-  return { ok: true, sentTo: body.to };
+  return { ok: true, sentTo: body.to, cc: body.cc || '' };
 }
 
 // Central "Analysis Index" spreadsheet — one row per scored call/SPS, with a

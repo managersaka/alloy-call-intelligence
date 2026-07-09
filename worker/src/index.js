@@ -36,6 +36,13 @@ const STAFF_EMAILS = JSON.parse(process.env.STAFF_EMAILS_JSON || '{}');
 const REPORT_FALLBACK_EMAIL = process.env.REPORT_FALLBACK_EMAIL || null;
 const REPORT_MAX_AGE_DAYS = Number(process.env.REPORT_MAX_AGE_DAYS || 3);
 
+// SPS reports go to a fixed oversight set — the studio head + the two owners
+// (Prashant, Nimisha) — regardless of who ran the session. The studio head is
+// chosen by detected studio; the owners are always included so a studio misread
+// never drops the report. Phone calls keep per-staff routing (see deliverReport).
+const STUDIO_HEAD = { Lincolnshire: 'Colin Yording', Schaumburg: 'Christian Simanonis' };
+const SPS_OVERSIGHT = ['Prashant Singri', 'Nimisha Singri'];
+
 const CONFIDENCE_THRESHOLD = Number(process.env.REVIEW_THRESHOLD || 0.7);
 const MIN_CALL_SEC = Number(process.env.MIN_CALL_SEC || 45); // under this: voicemail tag, auto-classify without a Claude call
 const MIN_EVAL_SEC = Number(process.env.MIN_EVAL_SEC || 180); // sales calls under this: clarity tracked (classifier), but no full-rubric eval
@@ -436,8 +443,18 @@ async function deliverReport(call, json, private_report) {
   if (!bridgeEnabled() || json.call_type === 'misrouted') return;
   const ageDays = call.started_at ? (Date.now() - Date.parse(call.started_at)) / 86400_000 : Infinity;
   if (ageDays > REPORT_MAX_AGE_DAYS) return; // backfill — store only, never email
-  const to = STAFF_EMAILS[call.staff] || REPORT_FALLBACK_EMAIL;
-  if (!to) return console.warn(`no email for staff "${call.staff}" and no fallback — report not delivered`);
+  const isSps = json.call_type === 'sps' || call.kind === 'sps';
+  let recipients;
+  if (isSps) {
+    const head = STUDIO_HEAD[call.location_name]; // Colin / Christian, by detected studio (may be undefined)
+    recipients = [head && STAFF_EMAILS[head], ...SPS_OVERSIGHT.map((n) => STAFF_EMAILS[n])];
+  } else {
+    recipients = [STAFF_EMAILS[call.staff]]; // phone calls: the person who took the call
+  }
+  recipients = [...new Set(recipients.filter(Boolean))];
+  if (!recipients.length && REPORT_FALLBACK_EMAIL) recipients = [REPORT_FALLBACK_EMAIL];
+  if (!recipients.length) return console.warn(`no recipients for "${call.staff}" (${call.location_name}) — report not delivered`);
+  const [to, ...cc] = recipients;
   try {
     const when = (call.started_at || '').slice(0, 16).replace('T', ' ');
     const header = [
@@ -453,10 +470,11 @@ async function deliverReport(call, json, private_report) {
     ].join('\n');
     await bridge('report', {
       to,
+      cc: cc.length ? cc.join(',') : undefined,
       subject: `${json.call_type === 'sps' ? 'SPS review' : json.call_type === 'accountability' ? 'Accountability review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100${json.clarity_outcome ? `, ${json.clarity_outcome}` : ''}`,
       text: header + private_report,
     });
-    console.log(`report emailed to ${to} for ${call.id}`);
+    console.log(`report emailed to ${[to, ...cc].join(', ')} for ${call.id}`);
   } catch (e) {
     console.error(`report delivery failed for ${call.id}:`, e.message);
   }
