@@ -12,6 +12,7 @@ import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, e
 import { phoneTone, prosodyFromTranscription } from './tone.js';
 import { phoneDeliveryRead, deliveryReadFromFile, deliverySummary, audioEnabled } from './audio.js';
 import { fetchPlaudShare } from './plaud.js';
+import { reportEmailHtml } from './mdmail.js';
 import { rmSync } from 'node:fs';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
@@ -486,10 +487,23 @@ async function deliverReport(call, json, private_report) {
     const subject = isSps
       ? `SPS: ${call.location_name || 'Unknown'}: ${call.contact_name || 'Unknown member'}: ${(call.started_at || '').slice(0, 10)}`
       : `${json.call_type === 'accountability' ? 'Accountability review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100${json.clarity_outcome ? `, ${json.clarity_outcome}` : ''}`;
+    const html = reportEmailHtml({
+      score: json.weighted_total,
+      callType: json.call_type,
+      clarity: json.clarity_outcome,
+      caller: call.staff,
+      studio: call.location_name,
+      contact: call.contact_name,
+      when,
+      lengthMin: call.duration_sec ? Math.round(call.duration_sec / 60) + ' min' : null,
+      coachingPriority: json.coaching_priority,
+      reportMarkdown: private_report,
+    });
     await bridge('report', {
       to,
       cc: cc.length ? cc.join(',') : undefined,
       subject,
+      html, // rendered; bridge falls back to <pre> text only if html is absent
       text: header + private_report,
     });
     console.log(`report emailed to ${[to, ...cc].join(', ')} for ${call.id}`);
