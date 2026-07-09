@@ -9,8 +9,10 @@ import express from 'express';
 import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
 import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa } from './claude.js';
-import { phoneTone } from './tone.js';
-import { phoneDeliveryRead, deliverySummary, audioEnabled } from './audio.js';
+import { phoneTone, prosodyFromTranscription } from './tone.js';
+import { phoneDeliveryRead, deliveryReadFromFile, deliverySummary, audioEnabled } from './audio.js';
+import { fetchPlaudShare } from './plaud.js';
+import { rmSync } from 'node:fs';
 import { bridge, bridgeEnabled } from './bridge.js';
 import { registerDashboard } from './dashboard.js';
 
@@ -22,6 +24,7 @@ registerDashboard(app, db); // GET /call-intel (Caddy adds basic auth in front)
 // Location registry: locationId → { name, token }
 const LOCATIONS = JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]');
 const locById = Object.fromEntries(LOCATIONS.map((l) => [l.locationId, l]));
+const locByName = Object.fromEntries(LOCATIONS.map((l) => [l.name, l]));
 
 // GHL userId → display name (both locations merged; poll only returns userId)
 const USERS = JSON.parse(process.env.GHL_USERS_JSON || '{}');
@@ -97,6 +100,63 @@ async function ingestByContact(loc, contactId) {
         durationSec: m.meta?.call?.duration ?? null,
       });
     }
+  }
+}
+
+// ---------- Feed 3: Plaud share links (in-person SPS/Deep Dive) ----------
+// A "Plaud Links" sheet's onEdit trigger POSTs { link } here the instant a link
+// is pasted. One public share is self-contained: transcript + audio + metadata.
+// Processed inline (audio presigned URL is fresh) → SPS rubric + Tier A/B tone.
+app.post('/webhook/plaud', async (req, res) => {
+  const supplied = req.headers['x-webhook-secret'] || req.query.secret;
+  if (WEBHOOK_SECRET && supplied !== WEBHOOK_SECRET) return res.status(401).json({ ok: false });
+  const link = (req.body && (req.body.link || req.body.url)) || req.query.link;
+  if (!link) return res.status(400).json({ ok: false, error: 'no link' });
+  res.json({ ok: true }); // ack fast; process async
+  try {
+    await processPlaudLink(link);
+  } catch (e) {
+    console.error('plaud processing error:', e.message);
+  }
+});
+
+async function processPlaudLink(link) {
+  const s = await fetchPlaudShare(link);
+  if (!claim(db, `score:${s.id}`)) return console.log(`plaud ${s.id} already claimed`);
+  try {
+    const call = {
+      id: s.id,
+      kind: 'sps',
+      conversation_id: 'plaud_link',
+      contact_id: null,
+      contact_name: s.member,
+      location_id: locByName[s.studio]?.locationId || 'unknown',
+      location_name: s.studio,
+      direction: null,
+      staff: s.studio === 'Lincolnshire' ? 'Colin Yording' : s.studio === 'Schaumburg' ? 'Christian Simanonis' : null,
+      started_at: s.date,
+      duration_sec: s.duration_sec,
+      recording_url: null,
+      transcript: s.transcript,
+      transcript_source: 'plaud',
+    };
+    upsertCall(db, call);
+    const prosody = prosodyFromTranscription(s.sentences);
+    const audioRead = s.audioPath ? await deliveryReadFromFile(s.audioPath, { call_type: 'sps' }) : null;
+    if (s.audioPath) { try { rmSync(s.audioPath, { force: true }); } catch {} }
+    const toneMeta = [prosody?.summary, deliverySummary(audioRead)].filter(Boolean).join('\n') || undefined;
+    const { json, private_report } = await evaluateSps(s.transcript, {
+      caller: call.staff,
+      location: s.studio,
+      duration_sec: s.duration_sec,
+      recent_failure_patterns: recentPatterns(call),
+      tone: toneMeta,
+    });
+    await persistScore(call, json, private_report);
+    console.log(`plaud scored ${s.id} (${s.studio}, ${s.member || '?'}) ${json.weighted_total}`);
+  } catch (e) {
+    releaseClaim(db, `score:${s.id}`);
+    throw e;
   }
 }
 
@@ -272,30 +332,7 @@ async function processQueueOnce() {
       releaseClaim(db, `score:${call.id}`); // let the next run retry
       throw e;
     }
-    insertScore(db, {
-      call_id: call.id,
-      rubric_version: json.rubric_version,
-      call_type: json.call_type,
-      caller: call.staff || json.caller || null, // our attribution, not the model's echo
-      location_name: call.location_name,
-      sub_scores: JSON.stringify(json.sub_scores || {}),
-      weighted_total: json.weighted_total ?? null,
-      // session subtype + growth-ask (accountability) ride along in the pass_fail blob
-      pass_fail: JSON.stringify({
-        ...(json.pass_fail || {}),
-        ...(json.growth_ask ? { growth_ask: json.growth_ask } : {}),
-        ...(json.session_type ? { session_type: json.session_type } : {}),
-      }),
-      clarity_outcome: json.clarity_outcome || null,
-      booked: json.booked ? 1 : 0,
-      failure_patterns: JSON.stringify(json.failure_patterns || []),
-      shareable_summary: json.shareable_summary || null,
-      private_report,
-      coaching_priority: json.coaching_priority || null,
-    });
-    console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
-    await deliverReport(call, json, private_report);
-    await pushIndexRow(call, json);
+    await persistScore(call, json, private_report);
   };
   // Sales: kind='sps' (in-person Otter/Plaud transcript) → Prashant's SPS rubric;
   // everything else → the phone qualification-call rubric.
@@ -364,6 +401,34 @@ async function pushIndexRow(call, json) {
     db.prepare('UPDATE call_scores SET indexed = 0 WHERE call_id = ?').run(call.id); // retry via backfill
     console.error(`index push failed for ${call.id}:`, e.message);
   }
+}
+
+// Shared tail of scoring: store the score row, log, email the report, index it.
+async function persistScore(call, json, private_report) {
+  insertScore(db, {
+    call_id: call.id,
+    rubric_version: json.rubric_version,
+    call_type: json.call_type,
+    caller: call.staff || json.caller || null, // our attribution, not the model's echo
+    location_name: call.location_name,
+    sub_scores: JSON.stringify(json.sub_scores || {}),
+    weighted_total: json.weighted_total ?? null,
+    // session subtype + growth-ask (accountability) ride along in the pass_fail blob
+    pass_fail: JSON.stringify({
+      ...(json.pass_fail || {}),
+      ...(json.growth_ask ? { growth_ask: json.growth_ask } : {}),
+      ...(json.session_type ? { session_type: json.session_type } : {}),
+    }),
+    clarity_outcome: json.clarity_outcome || null,
+    booked: json.booked ? 1 : 0,
+    failure_patterns: JSON.stringify(json.failure_patterns || []),
+    shareable_summary: json.shareable_summary || null,
+    private_report,
+    coaching_priority: json.coaching_priority || null,
+  });
+  console.log(`scored ${call.id}: ${json.call_type} ${json.weighted_total}`);
+  await deliverReport(call, json, private_report);
+  await pushIndexRow(call, json);
 }
 
 // ---------- Phase 3: private report to the caller, minutes after the call ----------

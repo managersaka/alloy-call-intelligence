@@ -36,7 +36,7 @@ export function prosodyFromTranscription(raw) {
   const channels = Object.keys(byCh);
   const totalTalk = channels.reduce((a, c) => a + byCh[c].talk, 0) || 1;
   const talkRatio = channels
-    .map((c) => ({ channel: Number(c), pct: Math.round((byCh[c].talk / totalTalk) * 100) }))
+    .map((c) => ({ channel: /^\d+$/.test(c) ? `ch${c}` : c, pct: Math.round((byCh[c].talk / totalTalk) * 100) }))
     .sort((a, b) => b.pct - a.pct);
 
   // pauses (gaps on the shared timeline) + interruptions (a sentence starting
@@ -62,7 +62,7 @@ export function prosodyFromTranscription(raw) {
     pauses_over_3s: pausesOver3,
     interruptions,
     summary:
-      `talk split ${talkRatio.map((t) => `ch${t.channel} ${t.pct}%`).join(' / ')}; ` +
+      `talk split ${talkRatio.map((t) => `${t.channel} ${t.pct}%`).join(' / ')}; ` +
       `pace ~${paceWpm} wpm; longest pause ${Math.round(longestPause)}s; ` +
       `${pausesOver3} pauses ≥3s; ${interruptions} interruptions ` +
       `(one speaker cutting the other off). Map channels to coach/member from the transcript; ` +
