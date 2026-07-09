@@ -85,7 +85,11 @@ export async function fetchPlaudShare(link) {
   if (!text || text.length < 200) throw new Error('share has no usable transcript (transcribed + shared with transcript?)');
   const owner = share.owner_name || '';
   const studio = studioFor(owner, text);
-  const { date, member } = parseMemberDate(df.filename);
+  const { date: fnameDate, member } = parseMemberDate(df.filename);
+  // Prefer the recording's actual start_time (epoch ms) over a date parsed from
+  // the filename — it's the true session date/time for the report + title.
+  const startMs = Number(df.start_time);
+  const date = Number.isFinite(startMs) && startMs > 0 ? new Date(startMs).toISOString() : fnameDate;
 
   let audioPath = null;
   if (share.is_audio) {

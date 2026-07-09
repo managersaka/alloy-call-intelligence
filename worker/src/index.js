@@ -8,7 +8,7 @@ import 'dotenv/config';
 import express from 'express';
 import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
-import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa } from './claude.js';
+import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa, extractPlaudIntro } from './claude.js';
 import { phoneTone, prosodyFromTranscription } from './tone.js';
 import { phoneDeliveryRead, deliveryReadFromFile, deliverySummary, audioEnabled } from './audio.js';
 import { fetchPlaudShare } from './plaud.js';
@@ -134,16 +134,23 @@ async function processPlaudLink(link) {
   const s = await fetchPlaudShare(link);
   if (!claim(db, `score:${s.id}`)) return console.log(`plaud ${s.id} already claimed`);
   try {
+    // Coaches open each recording by stating the member + session type (+ maybe
+    // studio). Trust that spoken intro over Plaud's auto-generated topic title.
+    let intro = {};
+    try { intro = (await extractPlaudIntro(s.transcript)) || {}; }
+    catch (e) { console.warn(`plaud intro extract failed: ${String(e.message).slice(0, 80)}`); }
+    const member = intro.member_name || s.member || null;
+    const studio = intro.location === 'Schaumburg' || intro.location === 'Lincolnshire' ? intro.location : s.studio;
     const call = {
       id: s.id,
       kind: 'sps',
       conversation_id: 'plaud_link',
       contact_id: null,
-      contact_name: s.member,
-      location_id: locByName[s.studio]?.locationId || 'unknown',
-      location_name: s.studio,
+      contact_name: member,
+      location_id: locByName[studio]?.locationId || 'unknown',
+      location_name: studio,
       direction: null,
-      staff: s.studio === 'Lincolnshire' ? 'Colin Yording' : s.studio === 'Schaumburg' ? 'Christian Simanonis' : null,
+      staff: studio === 'Lincolnshire' ? 'Colin Yording' : studio === 'Schaumburg' ? 'Christian Simanonis' : null,
       started_at: s.date,
       duration_sec: s.duration_sec,
       recording_url: null,
@@ -157,13 +164,14 @@ async function processPlaudLink(link) {
     const toneMeta = [prosody?.summary, deliverySummary(audioRead)].filter(Boolean).join('\n') || undefined;
     const { json, private_report } = await evaluateSps(s.transcript, {
       caller: call.staff,
-      location: s.studio,
+      location: studio,
+      member,
       duration_sec: s.duration_sec,
       recent_failure_patterns: recentPatterns(call),
       tone: toneMeta,
     });
     await persistScore(call, json, private_report);
-    console.log(`plaud scored ${s.id} (${s.studio}, ${s.member || '?'}) ${json.weighted_total}`);
+    console.log(`plaud scored ${s.id} (${studio}, ${member || '?'}) ${json.weighted_total}`);
   } catch (e) {
     releaseClaim(db, `score:${s.id}`);
     throw e;
@@ -471,10 +479,14 @@ async function deliverReport(call, json, private_report) {
       `--------------------------------------------------------------------`,
       ``,
     ].join('\n');
+    // SPS subject follows a fixed scannable shape: "SPS: Location: Member: Date".
+    const subject = isSps
+      ? `SPS: ${call.location_name || 'Unknown'}: ${call.contact_name || 'Unknown member'}: ${(call.started_at || '').slice(0, 10)}`
+      : `${json.call_type === 'accountability' ? 'Accountability review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100${json.clarity_outcome ? `, ${json.clarity_outcome}` : ''}`;
     await bridge('report', {
       to,
       cc: cc.length ? cc.join(',') : undefined,
-      subject: `${json.call_type === 'sps' ? 'SPS review' : json.call_type === 'accountability' ? 'Accountability review' : 'Call review'}: ${call.contact_name || 'unknown contact'} — ${json.weighted_total}/100${json.clarity_outcome ? `, ${json.clarity_outcome}` : ''}`,
+      subject,
       text: header + private_report,
     });
     console.log(`report emailed to ${[to, ...cc].join(', ')} for ${call.id}`);
