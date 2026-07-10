@@ -21,21 +21,25 @@ function volume(sinceDays, untilDays = 0) {
     GROUP BY location_name, classification`).all(`-${sinceDays} days`, `-${untilDays} days`);
 }
 
+// Window on the CALL's start time, not scored_at — backfill scoring would
+// otherwise dump months of history into "this week". Misrouted calls score 0
+// by definition and are excluded from averages (counted separately).
 function scored(sinceDays, untilDays = 0) {
   return db.prepare(`
-    SELECT call_type, location_name, COUNT(*) n, ROUND(AVG(weighted_total), 1) avg_score
-    FROM call_scores
-    WHERE scored_at >= datetime('now', ?) AND scored_at < datetime('now', ?)
-    GROUP BY call_type, location_name`).all(`-${sinceDays} days`, `-${untilDays} days`);
+    SELECT s.call_type, s.location_name, COUNT(*) n, ROUND(AVG(s.weighted_total), 1) avg_score
+    FROM call_scores s JOIN calls c ON c.id = s.call_id
+    WHERE c.started_at >= datetime('now', ?) AND c.started_at < datetime('now', ?)
+      AND s.call_type != 'misrouted'
+    GROUP BY s.call_type, s.location_name`).all(`-${sinceDays} days`, `-${untilDays} days`);
 }
 
 // Rolling 4w per-caller rubric average (the L10 number) + last-7d for movement.
 const callers4w = db.prepare(`
-  SELECT caller, call_type, COUNT(*) n, ROUND(AVG(weighted_total), 1) avg_score
-  FROM call_scores
-  WHERE scored_at >= datetime('now', '-28 days')
-  GROUP BY caller, call_type
-  ORDER BY call_type, avg_score DESC`).all()
+  SELECT s.caller, s.call_type, COUNT(*) n, ROUND(AVG(s.weighted_total), 1) avg_score
+  FROM call_scores s JOIN calls c ON c.id = s.call_id
+  WHERE c.started_at >= datetime('now', '-28 days') AND s.call_type != 'misrouted'
+  GROUP BY s.caller, s.call_type
+  ORDER BY s.call_type, avg_score DESC`).all()
   .map((r) => (r.n < MIN_N ? { ...r, avg_score: null, note: `n<${MIN_N}` } : r));
 
 // Fog rate per caller, all sales calls regardless of length (clarity rule).
@@ -51,14 +55,15 @@ const fog4w = db.prepare(`
 // Failure-pattern watch-list: last 4w vs prior 4w.
 const patterns = (() => {
   const rows = db.prepare(`
-    SELECT caller, failure_patterns, scored_at FROM call_scores
-    WHERE scored_at >= datetime('now', '-56 days') AND failure_patterns IS NOT NULL`).all();
+    SELECT s.caller, s.failure_patterns, c.started_at FROM call_scores s
+    JOIN calls c ON c.id = s.call_id
+    WHERE c.started_at >= datetime('now', '-56 days') AND s.failure_patterns IS NOT NULL`).all();
   const cut = Date.now() - 28 * 86400_000;
   const tally = {};
   for (const r of rows) {
     let list = [];
     try { list = JSON.parse(r.failure_patterns); } catch { continue; }
-    const recent = new Date(r.scored_at).getTime() >= cut;
+    const recent = new Date(r.started_at).getTime() >= cut;
     for (const p of Array.isArray(list) ? list : []) {
       const key = `${r.caller}|${p}`;
       tally[key] ??= { caller: r.caller, pattern: p, last4w: 0, prior4w: 0 };
@@ -74,9 +79,14 @@ const patterns = (() => {
 
 // Best and worst scored calls of the week (coaching priorities only, no reports).
 const notable = db.prepare(`
-  SELECT caller, call_type, location_name, weighted_total, coaching_priority, scored_at
-  FROM call_scores WHERE scored_at >= datetime('now', '-7 days')
-  ORDER BY weighted_total`).all();
+  SELECT s.caller, s.call_type, s.location_name, s.weighted_total, s.coaching_priority, c.started_at
+  FROM call_scores s JOIN calls c ON c.id = s.call_id
+  WHERE c.started_at >= datetime('now', '-7 days') AND s.call_type != 'misrouted'
+  ORDER BY s.weighted_total`).all();
+
+const misrouted7d = db.prepare(`
+  SELECT COUNT(*) n FROM call_scores s JOIN calls c ON c.id = s.call_id
+  WHERE c.started_at >= datetime('now', '-7 days') AND s.call_type = 'misrouted'`).get().n;
 
 console.log(JSON.stringify({
   generated: new Date().toISOString(),
@@ -92,4 +102,5 @@ console.log(JSON.stringify({
   worst_call_7d: notable[0] ?? null,
   best_call_7d: notable.at(-1) ?? null,
   scored_calls_7d: notable.length,
+  misrouted_calls_7d: misrouted7d,
 }, null, 1));
