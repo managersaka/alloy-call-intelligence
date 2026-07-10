@@ -461,8 +461,16 @@ async function deliverReport(call, json, private_report) {
   const isSps = json.call_type === 'sps' || call.kind === 'sps';
   let recipients;
   if (isSps) {
-    const head = SPS_INCLUDE_STUDIO_HEAD ? STUDIO_HEAD[call.location_name] : null; // held back until validated
-    recipients = [head && STAFF_EMAILS[head], ...SPS_OVERSIGHT.map((n) => STAFF_EMAILS[n])];
+    // SPS_REPORT_TO (comma-separated) overrides the whole SPS recipient list — used
+    // to route to an inbox the owner actually watches (e.g. personal Gmail) so the
+    // report isn't sent from p.singri@ to p.singri@ (self-sent → All Mail, unseen).
+    const override = (process.env.SPS_REPORT_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (override.length) {
+      recipients = override;
+    } else {
+      const head = SPS_INCLUDE_STUDIO_HEAD ? STUDIO_HEAD[call.location_name] : null; // held back until validated
+      recipients = [head && STAFF_EMAILS[head], ...SPS_OVERSIGHT.map((n) => STAFF_EMAILS[n])];
+    }
   } else {
     recipients = [STAFF_EMAILS[call.staff]]; // phone calls: the person who took the call
   }
