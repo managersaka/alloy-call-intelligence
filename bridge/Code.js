@@ -120,6 +120,7 @@ function sendReport_(body) {
     subject: body.subject || 'Your call review',
     htmlBody: body.html || ('<pre style="font-family:inherit;white-space:pre-wrap">' + (body.text || '') + '</pre>'),
     name: 'Alloy Call Coach',
+    noReply: true, // send from a generic no-reply@ (Workspace) so it's NOT self-sent → lands unread in the inbox
   });
   return { ok: true, sentTo: body.to, cc: body.cc || '' };
 }
