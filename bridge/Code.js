@@ -114,14 +114,33 @@ function writeRollup_(body) {
 
 function sendReport_(body) {
   if (!body.to) return { ok: false, error: 'no recipient' };
-  MailApp.sendEmail({
+  // Branding (Prashant 2026-07-12): assistant-facing artifacts are "Prime".
+  // PRIME_FROM (Script Property) is a Gmail send-as alias, e.g. prime@alloytraining.com;
+  // requires the alias to exist on the deploying account AND the mail.google.com scope
+  // (Phase 2). Until then MailApp sends from the account with the Prime display name.
+  var props = PropertiesService.getScriptProperties();
+  var replyTo = props.getProperty('PRIME_REPLY_TO') || 'p.singri@alloypersonaltraining.com';
+  var opts = {
     to: body.to,
     cc: body.cc || '',
     subject: body.subject || 'Your call review',
     htmlBody: body.html || ('<pre style="font-family:inherit;white-space:pre-wrap">' + (body.text || '') + '</pre>'),
-    name: 'Alloy Call Coach',
-  });
-  return { ok: true, sentTo: body.to, cc: body.cc || '' };
+    name: 'Prime Call Coach',
+    replyTo: replyTo,
+  };
+  var from = props.getProperty('PRIME_FROM');
+  if (from && typeof GmailApp !== 'undefined') {
+    try {
+      if (GmailApp.getAliases().indexOf(from) !== -1) {
+        GmailApp.sendEmail(body.to, opts.subject, body.text || '', {
+          cc: opts.cc, htmlBody: opts.htmlBody, name: opts.name, replyTo: replyTo, from: from,
+        });
+        return { ok: true, sentTo: body.to, cc: opts.cc, from: from };
+      }
+    } catch (e) { /* alias/scope not ready — fall through to MailApp */ }
+  }
+  MailApp.sendEmail(opts);
+  return { ok: true, sentTo: body.to, cc: opts.cc };
 }
 
 // Central "Analysis Index" spreadsheet — one row per scored call/SPS, with a
