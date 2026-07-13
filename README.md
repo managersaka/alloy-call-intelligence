@@ -40,6 +40,11 @@ alloy-call-intelligence/
 7. Cron:
    - Nightly sweep: `15 2 * * * cd /opt/alloy-call-intelligence/worker && node src/index.js --poll`
    - Weekly rollup (Sun 9pm): `0 21 * * 0 cd /opt/alloy-call-intelligence/worker && node src/rollup.js`
+   - **Prime lead-responder SHADOW MODE** (drafts only, never sends):
+     - Draft sweep, business hours every 15 min: `*/15 6-22 * * * cd /opt/alloy-call-intelligence/worker && flock -n /tmp/prime-shadow.lock node src/prime-shadow.js >> /var/log/prime-shadow.log 2>&1`
+     - Daily draft-vs-actual digest (7:10am CT): `10 7 * * * cd /opt/alloy-call-intelligence/worker && node src/prime-digest.js >> /var/log/prime-shadow.log 2>&1`
+     - Env: `PRIME_DIGEST_TO` (defaults to `REPORT_FALLBACK_EMAIL`), `PRIME_LOOKBACK_H` (24), `PRIME_CONVERSATIONS` (40), `PRIME_MAX_DRAFTS` (25).
+     - Reads `worker/data/prime-kb.md` (bundled studio KB — regenerate from the vault notes when policies change). NOTHING is ever sent to a lead; drafts live in the `prime_shadow` table and go out only in the digest to the owner. Lead-vs-member split needs `contacts.readonly` + `opportunities.readonly` on the PIT; if absent the check fails safe (treats as lead, labels `check_failed` in the digest).
 
 ## Verify before first run
 
