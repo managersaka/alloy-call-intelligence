@@ -164,6 +164,23 @@ export async function evaluateSps(transcript, meta) {
   return { json, private_report };
 }
 
+// Prime lead-responder (SHADOW MODE) — drafts an SMS reply to an inbound lead
+// message from the studio knowledgebase. Prompt + KB are read lazily so the
+// rest of the pipeline never depends on their presence.
+export async function draftLeadReply(meta, conversation) {
+  const system =
+    readFileSync(path.join(__dirname, '..', 'prompts', 'prime-lead-responder.md'), 'utf8') +
+    '\n\n# KNOWLEDGEBASE (the ONLY source of facts)\n\n' +
+    readFileSync(path.join(__dirname, '..', 'data', 'prime-kb.md'), 'utf8');
+  const text = await ask({
+    model: EVALUATOR_MODEL,
+    system,
+    user: `Metadata: ${JSON.stringify(meta)}\n\nConversation so far (oldest first, ends with the message to answer):\n\n${conversation.slice(-24000)}`,
+    max_tokens: 800,
+  });
+  return extractJsonBlock(text).json;
+}
+
 export async function evaluateSalesCall(transcript, meta) {
   const text = await ask({
     model: EVALUATOR_MODEL,

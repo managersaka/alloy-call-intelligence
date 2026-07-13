@@ -66,3 +66,15 @@ export async function getCalendarEvents(token, locationId, calendarId, startMs, 
 export function isCallMessage(msg) {
   return msg?.messageType === 'TYPE_CALL' || msg?.type === 'TYPE_CALL';
 }
+
+// --- Prime lead-responder additions (contacts + opportunities use a newer API version) ---
+
+export async function getContact(token, contactId) {
+  return ghlFetch(`/contacts/${contactId}`, token, { headers: { Version: '2021-07-28' } });
+}
+
+/** Opportunities for one contact — used to tell leads (no won opp) from members. */
+export async function searchOpportunities(token, locationId, contactId) {
+  const q = new URLSearchParams({ location_id: locationId, contact_id: contactId, limit: '20' });
+  return ghlFetch(`/opportunities/search?${q}`, token, { headers: { Version: '2021-07-28' } });
+}
