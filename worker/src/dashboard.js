@@ -8,15 +8,22 @@ const MIN_N = Number(process.env.MIN_N || 5);
 
 // Partner QR scans + entries come from the redirect service on the same droplet (localhost only).
 // Never blocks the dashboard: any error -> null -> the section shows "unavailable".
-const PARTNER_QR_URL = process.env.PARTNER_QR_URL || 'http://127.0.0.1:3137/combined.json';
+const PARTNER_QR_BASE = process.env.PARTNER_QR_BASE || 'http://127.0.0.1:3137';
 const PARTNER_QR_TOKEN = process.env.PARTNER_QR_TOKEN || process.env.STATS_TOKEN || '';
+// Scans come from /stats.json (always available on the droplet); entries/names from /combined.json
+// (filled hourly by the Apps Script once the GHL feed is wired). Merge so scans show even before entries.
 async function fetchPartnerQr() {
   try {
-    const res = await fetch(PARTNER_QR_URL, {
-      headers: PARTNER_QR_TOKEN ? { 'X-Stats-Token': PARTNER_QR_TOKEN } : {},
-      signal: AbortSignal.timeout(2500),
-    });
-    return res.ok ? await res.json() : null;
+    const hdr = PARTNER_QR_TOKEN ? { 'X-Stats-Token': PARTNER_QR_TOKEN } : {};
+    const get = (p) => fetch(PARTNER_QR_BASE + p, { headers: hdr, signal: AbortSignal.timeout(2500) })
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    const [statsJson, combined] = await Promise.all([get('/stats.json'), get('/combined.json')]);
+    const scans = (statsJson && statsJson.scans) || {};
+    const rows = { ...((combined && combined.rows) || {}) };
+    for (const code of new Set([...Object.keys(scans), ...Object.keys(rows)])) {
+      rows[code] = { ...(rows[code] || {}), scans: (scans[code] && scans[code].scans) || (rows[code] && rows[code].scans) || 0 };
+    }
+    return Object.keys(rows).length ? { updatedAt: combined && combined.updatedAt, rows } : null;
   } catch { return null; }
 }
 
