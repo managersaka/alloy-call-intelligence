@@ -6,10 +6,25 @@ const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 const MIN_EVAL_SEC = Number(process.env.MIN_EVAL_SEC || 180);
 const MIN_N = Number(process.env.MIN_N || 5);
 
+// Partner QR scans + entries come from the redirect service on the same droplet (localhost only).
+// Never blocks the dashboard: any error -> null -> the section shows "unavailable".
+const PARTNER_QR_URL = process.env.PARTNER_QR_URL || 'http://127.0.0.1:3137/combined.json';
+const PARTNER_QR_TOKEN = process.env.PARTNER_QR_TOKEN || process.env.STATS_TOKEN || '';
+async function fetchPartnerQr() {
+  try {
+    const res = await fetch(PARTNER_QR_URL, {
+      headers: PARTNER_QR_TOKEN ? { 'X-Stats-Token': PARTNER_QR_TOKEN } : {},
+      signal: AbortSignal.timeout(2500),
+    });
+    return res.ok ? await res.json() : null;
+  } catch { return null; }
+}
+
 export function registerDashboard(app, db) {
-  app.get('/call-intel', (req, res) => {
+  app.get('/call-intel', async (req, res) => {
     try {
-      res.type('html').send(render(db));
+      const partners = await fetchPartnerQr();
+      res.type('html').send(render(db, partners));
     } catch (e) {
       res.status(500).type('text').send(`dashboard error: ${e.message}`);
     }
@@ -68,7 +83,7 @@ const STUDIOS = (() => {
   try { return JSON.parse(process.env.GHL_LOCATIONS_JSON || '[]').map((l) => l.name); } catch { return []; }
 })();
 
-function render(db) {
+function render(db, partners) {
   const weekRows = db.prepare(`
     SELECT location_name,
            COUNT(*) total,
@@ -155,6 +170,20 @@ function render(db) {
   const tile = (label, value, sub = '') => `
     <div class="tile"><div class="tile-v">${value}</div><div class="tile-l">${label}</div>${sub ? `<div class="tile-s">${sub}</div>` : ''}</div>`;
 
+  // Partners — QR scans (redirect service) + entries (GHL, by partner code); fed hourly into combined.json.
+  const pRows = (partners && partners.rows) || {};
+  const pCodes = Object.keys(pRows).sort((a, b) => (pRows[b].scans || 0) - (pRows[a].scans || 0));
+  const pScans = pCodes.reduce((a, c) => a + (pRows[c].scans || 0), 0);
+  const pEnt = pCodes.reduce((a, c) => a + (pRows[c].entries || 0), 0);
+  const partnersSection = `
+<h2>Partners — QR scans &amp; entries${partners && partners.updatedAt ? ` <span class="note" style="text-transform:none;font-weight:400">· leads as of ${esc((partners.updatedAt || '').slice(0, 16).replace('T', ' '))} UTC</span>` : ''}</h2>
+${!partners ? '<div class="note">Partner QR stats unavailable (redirect service not reachable).</div>' : `
+<div class="tiles">${tile('Total scans', pScans)}${tile('Total entries', pEnt)}${tile('Scan → entry', pScans ? Math.round((pEnt / pScans) * 100) + '%' : '—')}${tile('Active QR codes', pCodes.length)}</div>
+<table><tr><th>Partner</th><th>Code</th><th>Terr</th><th>Scans</th><th>Entries</th><th>Conv</th><th>Members</th></tr>
+${pCodes.map((c) => { const r = pRows[c]; const sc = r.scans || 0, en = r.entries || 0; return `<tr><td>${esc(r.name || c)}</td><td class="note">${esc(c)}</td><td>${esc(r.territory || '')}</td><td>${sc}</td><td>${en}</td><td class="${en && sc ? 'booked' : ''}">${sc ? Math.round((en / sc) * 100) + '%' : '—'}</td><td>${r.members || 0}</td></tr>`; }).join('') || '<tr><td colspan="7">No QR activity yet.</td></tr>'}
+</table>
+<div class="note">Scans = QR opens on the redirect service. Entries = GHL leads stamped with the partner code (Source = B2B Partner); refreshed hourly.</div>`}`;
+
   const studioTiles = (name) => {
     const w = weekBy[name] || { total: 0, sales: 0, review: 0, fog: 0, booked: 0 };
     const fogRate = w.sales ? w.fog / w.sales : null;
@@ -203,6 +232,8 @@ function render(db) {
 <header><h1>Alloy <span>Call Intelligence</span></h1><div class="sub">generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · read-only</div></header>
 <main>
 ${studios.map(studioTiles).join('')}
+
+${partnersSection}
 
 <h2>Rubric score — rolling 4 weeks (graded conversations ≥ ${MIN_EVAL_SEC / 60} min)</h2>
 <table><tr><th>Caller</th><th>Type</th><th>n</th><th>Avg score</th><th>Booked rate</th></tr>
