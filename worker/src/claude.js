@@ -17,6 +17,13 @@ const API = 'https://api.anthropic.com/v1/messages';
 const KEY = process.env.ANTHROPIC_API_KEY;
 const MODE = process.env.CLAUDE_MODE || 'cli';
 const CLI_TIMEOUT_MS = Number(process.env.CLI_TIMEOUT_MS || 180_000);
+// `claude -p --max-turns N` exits NON-ZERO with "Error: Reached max turns (N)" on
+// STDOUT (not stderr) when a response needs more than N turns. CLI 2.1.212 counts a
+// structured JSON-plus-written-report evaluator response as ~3–4 turns, so the old
+// hard-coded `1` failed ~90% of scores after the 2026-07-17 CLI upgrade (2.1.201 →
+// 2.1.212). There are no tools in `-p` scoring mode, so nothing can run away — the
+// only bound that matters is CLI_TIMEOUT_MS. Keep headroom above the observed need.
+const CLI_MAX_TURNS = Number(process.env.CLI_MAX_TURNS || 8);
 
 const CLASSIFIER_MODEL = process.env.CLASSIFIER_MODEL || (MODE === 'cli' ? 'haiku' : 'claude-haiku-4-5-20251001');
 const EVALUATOR_MODEL = process.env.EVALUATOR_MODEL || (MODE === 'cli' ? 'sonnet' : 'claude-sonnet-4-6');
@@ -53,7 +60,7 @@ function askCli({ model, system, user }) {
     // API instead of the subscription — the whole point of cli mode.
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
-    const child = spawn('claude', ['-p', '--model', model, '--max-turns', '1'], {
+    const child = spawn('claude', ['-p', '--model', model, '--max-turns', String(CLI_MAX_TURNS)], {
       env,
       shell: process.platform === 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -72,7 +79,9 @@ function askCli({ model, system, user }) {
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code !== 0) reject(new Error(`claude CLI exit ${code}: ${err.slice(0, 300)}`));
+      // The CLI writes some failures (e.g. "Error: Reached max turns") to STDOUT,
+      // not stderr — so surface both, or a non-zero exit reads as an empty error.
+      if (code !== 0) reject(new Error(`claude CLI exit ${code}: ${(err || out).trim().slice(0, 300)}`));
       else resolve(out);
     });
     child.stdin.write(`${system}\n\n---\n\n${user}`);

@@ -21,7 +21,44 @@ export function openDb() {
   // processes sharing this DB; a claim ensures a call is classified/scored
   // (and its report emailed) exactly once.
   db.exec(`CREATE TABLE IF NOT EXISTS claims (key TEXT PRIMARY KEY, at TEXT DEFAULT (datetime('now')))`);
+  // Per-call scoring failure ledger. A call that fails deterministically (oversized
+  // transcript, malformed model output, etc.) used to release its claim and be
+  // retried on EVERY 10-min poll forever — 87 such calls generated 6,506 failed
+  // `claude` spawns in a single day (2026-07-17), burning subscription usage and
+  // starving live calls. After SCORE_ATTEMPT_CAP failures a call is dead-lettered:
+  // excluded from the unscored selectors, its last error kept for diagnosis.
+  db.exec(`CREATE TABLE IF NOT EXISTS score_attempts (
+    call_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, last_at TEXT DEFAULT (datetime('now')))`);
   return db;
+}
+
+// After this many failed scoring attempts a call is dead-lettered (stops retrying).
+// Generous enough to ride out transient CLI/API blips; tight enough to kill a runaway.
+export const SCORE_ATTEMPT_CAP = 5;
+
+/** Record a failed scoring attempt; returns the new attempt count. */
+export function recordScoreFailure(db, callId, errMsg) {
+  db.prepare(`
+    INSERT INTO score_attempts (call_id, attempts, last_error, last_at)
+    VALUES (?, 1, ?, datetime('now'))
+    ON CONFLICT(call_id) DO UPDATE SET
+      attempts = attempts + 1, last_error = excluded.last_error, last_at = datetime('now')
+  `).run(callId, (errMsg || '').slice(0, 500));
+  return db.prepare('SELECT attempts FROM score_attempts WHERE call_id = ?').get(callId)?.attempts ?? 1;
+}
+
+/** Clear the failure ledger for a call that finally scored (hygiene; selectors already exclude scored calls). */
+export function clearScoreAttempts(db, callId) {
+  db.prepare('DELETE FROM score_attempts WHERE call_id = ?').run(callId);
+}
+
+/** Dead-lettered calls (attempts >= cap) — for the watchdog + root-cause diagnosis. */
+export function deadLetteredScores(db, cap = SCORE_ATTEMPT_CAP) {
+  return db.prepare(`
+    SELECT call_id, attempts, last_error, last_at FROM score_attempts
+    WHERE attempts >= ? ORDER BY attempts DESC
+  `).all(cap);
 }
 
 export function claim(db, key) {
@@ -98,21 +135,27 @@ export function unscoredAccountabilityCalls(db, minEvalSec = 0, limit = 10) {
   return db.prepare(`
     SELECT c.* FROM calls c
     LEFT JOIN call_scores s ON s.call_id = c.id
+    LEFT JOIN score_attempts a ON a.call_id = c.id
     WHERE c.classification = 'accountability' AND s.id IS NULL AND c.transcript IS NOT NULL
       AND (c.duration_sec IS NULL OR c.duration_sec >= ?)
+      AND (a.attempts IS NULL OR a.attempts < ?)
     LIMIT ?
-  `).all(minEvalSec, limit);
+  `).all(minEvalSec, SCORE_ATTEMPT_CAP, limit);
 }
 
 export function unscoredSalesCalls(db, minEvalSec = 0, limit = 10) {
   // Full-rubric evaluation only for real conversations (>= minEvalSec); shorter
   // sales calls keep their classifier clarity_outcome but are never rubric-scored.
   // Unknown duration => still evaluate (rare; better to over-grade than miss a real call).
+  // Dead-lettered calls (>= SCORE_ATTEMPT_CAP failures) are excluded so one bad
+  // transcript can't loop every poll forever.
   return db.prepare(`
     SELECT c.* FROM calls c
     LEFT JOIN call_scores s ON s.call_id = c.id
+    LEFT JOIN score_attempts a ON a.call_id = c.id
     WHERE c.classification = 'sales' AND s.id IS NULL AND c.transcript IS NOT NULL
       AND (c.duration_sec IS NULL OR c.duration_sec >= ?)
+      AND (a.attempts IS NULL OR a.attempts < ?)
     LIMIT ?
-  `).all(minEvalSec, limit);
+  `).all(minEvalSec, SCORE_ATTEMPT_CAP, limit);
 }

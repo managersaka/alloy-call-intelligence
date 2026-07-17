@@ -6,7 +6,7 @@
 
 import 'dotenv/config';
 import express from 'express';
-import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims } from './db.js';
+import { openDb, upsertCall, setClassification, insertScore, unprocessedCalls, unscoredSalesCalls, unscoredAccountabilityCalls, qaPendingCalls, insertQaRows, claim, releaseClaim, cleanStaleClaims, recordScoreFailure, clearScoreAttempts, SCORE_ATTEMPT_CAP } from './db.js';
 import { searchConversations, getMessages, getTranscription, isCallMessage } from './ghl.js';
 import { classifyCall, evaluateSalesCall, evaluateSps, evaluateAccountability, extractQa, extractPlaudIntro } from './claude.js';
 import { phoneTone, prosodyFromTranscription } from './tone.js';
@@ -352,9 +352,14 @@ async function processQueueOnce() {
       }));
     } catch (e) {
       releaseClaim(db, `score:${call.id}`); // let the next run retry
+      const n = recordScoreFailure(db, call.id, e.message); // ...until the cap dead-letters it
+      if (n >= SCORE_ATTEMPT_CAP) {
+        console.error(`DEAD-LETTERED ${call.id} after ${n} failed scoring attempts — last error: ${e.message}`);
+      }
       throw e;
     }
     await persistScore(call, json, private_report);
+    clearScoreAttempts(db, call.id); // scored cleanly — drop any prior failure tally
   };
   // Sales: kind='sps' (in-person Otter/Plaud transcript) → Prashant's SPS rubric;
   // everything else → the phone qualification-call rubric.
