@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const API = 'https://api.anthropic.com/v1/messages';
@@ -60,11 +61,25 @@ function askCli({ model, system, user }) {
     // API instead of the subscription — the whole point of cli mode.
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY;
-    const child = spawn('claude', ['-p', '--model', model, '--max-turns', String(CLI_MAX_TURNS)], {
-      env,
-      shell: process.platform === 'win32',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Pass the rubric as the SYSTEM prompt (not the stdin user blob) so the model
+    // reliably SCORES instead of treating it as a chat request ("do you want me to
+    // review this prompt?"), and disable MCP + run from a neutral cwd so the CLI
+    // doesn't load this repo's .mcp.json / project context and reason about it on
+    // every call — that agentic overhead was ~100s/score post-2.1.212 (see below).
+    const child = spawn(
+      'claude',
+      [
+        '-p', '--model', model, '--max-turns', String(CLI_MAX_TURNS),
+        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+        '--append-system-prompt', system,
+      ],
+      {
+        env,
+        cwd: os.tmpdir(),
+        shell: process.platform === 'win32',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -84,7 +99,7 @@ function askCli({ model, system, user }) {
       if (code !== 0) reject(new Error(`claude CLI exit ${code}: ${(err || out).trim().slice(0, 300)}`));
       else resolve(out);
     });
-    child.stdin.write(`${system}\n\n---\n\n${user}`);
+    child.stdin.write(user);
     child.stdin.end();
   });
 }
