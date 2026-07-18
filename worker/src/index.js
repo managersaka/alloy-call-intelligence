@@ -528,8 +528,9 @@ async function deliverReport(call, json, private_report) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = process.env.PORT || 3131;
+const HOST = process.env.HOST || '127.0.0.1'; // Caddy fronts us; never expose the raw port
 if (process.argv.includes('--poll')) {
   pollOnce().then(() => process.exit(0));
 } else {
-  app.listen(PORT, () => console.log(`call-intelligence worker on :${PORT}`));
+  app.listen(PORT, HOST, () => console.log(`call-intelligence worker on ${HOST}:${PORT}`));
 }
